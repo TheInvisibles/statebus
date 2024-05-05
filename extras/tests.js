@@ -295,6 +295,16 @@ test(function url_translation (done) {
     done()
 })
 
+test(function proxy_link (done) {
+    console.log('lets test')
+
+    bus.state.link_from = [{link: 'link_to'}]
+    bus.state.link_to = 3
+    assert(bus.state.link_from[0] !== 3, 'Link got linkified')
+
+    done()
+})
+
 test(function translate_fields (done) {
     // Translate Statebus -> Proxy format
     var tests1 = [
@@ -315,7 +325,7 @@ test(function translate_fields (done) {
     // Test 1
     var tests = tests1
     for (var i=0; i<tests.length; i++) {
-        var trans = bus.translate_fields(tests[i][0], bus.keyed_2_proxied)
+        var trans = bus.translate_fields(tests[i][0], bus.unescape_from_bus)
         assert(bus.deep_equals(trans, tests[i][1]),
                'Bad translation1: ' + i + ' ' + JSON.stringify(trans))
     }
@@ -323,7 +333,7 @@ test(function translate_fields (done) {
     // Test 2
     tests = tests2
     for (var i=0; i<tests2.length; i++) {
-        var trans = bus.translate_fields(tests[i][0], bus.proxied_2_keyed)
+        var trans = bus.translate_fields(tests[i][0], bus.escape_to_bus)
         assert(bus.deep_equals(trans, tests[i][1]),
                'Bad translation2: ' + i + ' ' + JSON.stringify(trans))
     }

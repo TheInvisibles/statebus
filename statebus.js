@@ -1300,9 +1300,9 @@
 
     var symbols = {
         is_proxy: Symbol('is_proxy'),
-        is_link: Symbol('is_link'),
-        get_json: Symbol('get_json'),
-        get_base: Symbol('get_base')
+        // is_link: Symbol('is_link'),
+        // get_json: Symbol('get_json'),
+        // get_base: Symbol('get_base')
     }
     function make_proxy () {
         function item_proxy (base, path, o) {
@@ -1343,11 +1343,11 @@
 
                     // Compute the new path
                     var new_path = path + '[' + JSON.stringify(k) + ']'
-                    return item_proxy(base, new_path, o[proxied_2_keyed(k)])
+                    return item_proxy(base, new_path, o[escape_to_bus(k)])
                 },
                 set: function set(o, k, v) {
-                    var value = translate_fields(v, proxied_2_keyed)
-                    o[proxied_2_keyed(k)] = value
+                    var value = translate_fields(v, field => escape_to_bus(escape_to_nelson(field)))
+                    o[escape_to_bus(k)] = value
                     var new_path = path + '[' + JSON.stringify(k) + ']'
                     bus.set(
                         base,
@@ -1357,11 +1357,11 @@
                     return true
                 },
                 has: function has(o, k) {
-                    return o.hasOwnProperty(proxied_2_keyed(k))
+                    return o.hasOwnProperty(escape_to_bus(k))
                 },
                 deleteProperty: function del (o, k) {
                     var new_path = path + '[' + JSON.stringify(k) + ']'
-                    delete o[proxied_2_keyed(k)]
+                    delete o[escape_to_bus(k)]
                     bus.set(
                         base,
                         // Forward the patch too
@@ -1372,7 +1372,7 @@
                 // For function proxies:
                 //
                 // apply: function apply (o, This, args) {
-                //     return translate_fields(o, keyed_2_proxied)
+                //     return translate_fields(o, unescape_from_bus)
                 // }
             })}
 
@@ -1383,6 +1383,8 @@
         // The top-level Proxy object holds HTTP resources
         return new Proxy(cache, {
             get: function get(o, k) {
+                if (k === symbols.is_proxy)
+                    return true
                 if (k === 'inspect' || k === 'valueOf' || typeof k === 'symbol')
                     return undefined
                 bogus_check(k)
@@ -1390,11 +1392,14 @@
                 return item_proxy(base, '', base.val)
             },
             set: function set(o, key, val) {
-                bus.set({key: key, val: translate_fields(val, proxied_2_keyed)})
+                bus.set({
+                    key: key,
+                    val: translate_fields(val, field => escape_to_bus(escape_to_nelson(field)))
+                })
                 return true
             },
             deleteProperty: function del (o, k) {
-                bus.delete(proxied_2_keyed(k))
+                bus.delete(escape_to_bus(k))
                 return true // Report success to Proxy
             },
             // For function proxies:
@@ -1405,11 +1410,11 @@
     }
     bus.state = make_proxy()
 
-    function link (url) {
-        var result = bus.get(url)
-        result[symbols.is_link] = true
-        return result
-    }
+    // function link (url) {
+    //     var result = bus.get(url)
+    //     result[symbols.is_link] = true
+    //     return result
+    // }
 
 
     // So chrome can print out proxy objects decently
@@ -1662,54 +1667,48 @@
 
     // ************************************************
     // Translating the URLs under keys of state
-    function translate_keys (obj, f) {
+    function translate_keys (obj, translate) {
         // Recurse through each element in arrays
         if (Array.isArray(obj))
             for (var i=0; i < obj.length; i++)
-                translate_keys(obj[i], f)
+                translate_keys(obj[i], translate)
 
         // Recurse through each property on objects
         else if (typeof obj === 'object')
             for (var k in obj) {
                 if (k === 'key' || /.*_key$/.test(k))
                     if (typeof obj[k] == 'string')
-                        obj[k] = f(obj[k])
+                        obj[k] = translate(obj[k])
                     else if (Array.isArray(obj[k]))
                         for (var i=0; i < obj[k].length; i++) {
                             if (typeof obj[k][i] === 'string')
-                                obj[k][i] = f(obj[k][i])
+                                obj[k][i] = translate(obj[k][i])
                         }
-                translate_keys(obj[k], f)
+                translate_keys(obj[k], translate)
             }
         return obj
-    }
-    function escape_keys(k) {
-        return k.replace(/(_(keys?|time)?$|^key$)/, '$1_')
-    }
-    function unescape_keys (k) {
-        return k.replace(/(_$)/, '')
     }
 
     // ************************************************
     // Translating the URLs under links of state
-    function translate_links (obj, f) {
+    function translate_links (obj, translate) {
         // Recurse through each element in arrays
         if (Array.isArray(obj))
             for (var i=0; i < obj.length; i++)
-                translate_links(obj[i], f)
+                translate_links(obj[i], translate)
 
         // Recurse through each property on objects
         else if (typeof obj === 'object')
             for (var k in obj) {
                 if (k === 'link')
-                    if (typeof obj[k] == 'string')
-                        obj[k] = f(obj[k])
+                    if (typeof obj[k] === 'string')
+                        obj[k] = translate(obj[k])
                     else if (Array.isArray(obj[k]))
                         for (var i=0; i < obj[k].length; i++) {
                             if (typeof obj[k][i] === 'string')
-                                obj[k][i] = f(obj[k][i])
+                                obj[k][i] = translate(obj[k][i])
                         }
-                translate_links(obj[k], f)
+                translate_links(obj[k], translate)
             }
         return obj
     }
@@ -1721,56 +1720,45 @@
     // Recurse through JSON and swap all object fields with other field names,
     // according to the function f(field, object).  Returns a copy.
     //
-    // f(field, object) takes a string `field` and returns the new field name
-    // for `object`.
-    function translate_fields (input, f) {
+    // translate(field, object) takes a string `field` and returns the new
+    // field name for `object`.
+    function translate_fields (json, translate) {
         var result
 
         // Recurse through each element in arrays
-        if (Array.isArray(input)) {
-            var new_array = input.slice()
-            for (var i=0; i < input.length; i++)
-                new_array[i] = translate_fields(input[i], f)
+        if (Array.isArray(json)) {
+            var new_array = json.slice()
+            for (var i=0; i < json.length; i++)
+                new_array[i] = translate_fields(json[i], translate)
             result = new_array
         }
 
         // Recurse through each property on objects
-        else if (typeof input === 'object' && input !== null) {
+        else if (typeof json === 'object' && json !== null) {
             var new_obj = {}
-            for (var k in input)
-                new_obj[f(k, input)] = translate_fields(input[k], f)
+            for (var k in json)
+                new_obj[translate(k, json)] = translate_fields(json[k], translate)
             result = new_obj
         }
 
         // Everything else passes through unscathed
         else
-            result = input
+            result = json
 
         return result
     }
-    // Remove underscore from _key
-    function keyed_2_proxied (k, object) {
-        if (object[symbols.is_link])
-            return k
-        else
-            return k.replace(/^(_*)_key$/, '$1key')
-    }
-    // Add underscore to key
-    function proxied_2_keyed (k) {
-        return k.replace(/^(_*)key$/, '$1_key')
-    }
 
 
-    // ******************
-    // JSON encoding
-    //  - Does both escape/unescape keys, and wraps/unwraps pointers
-    //  - Will use in both network communication and file_store
-    function json_encode (highlevel_obj) {
-        // Encodes fields, and converts {_key: 's'} to pointer to {key: 's'...}
-    }
-    function json_decode (lowlevel_obj) {
-        // Decodes fields, and converts pointer to {key: 's'...} to {_key: 's'}
-    }
+    // Three levels of escaping through state:
+    //
+    //  - statebus-internal escapes key  -> _key
+    //  - nelSON            escapes link -> _link
+    //  - JSON
+    //
+    var escape_to_bus        = (field) => field.replace(/^(_*)key$/, '$1_key'),
+        unescape_from_bus    = (field) => field.replace(/^(_*)_key$/, '$1key'),
+        escape_to_nelson     = (field) => field.replace(/^(_*)link$/, '$1_key'),
+        unescape_from_nelson = (field) => field.replace(/^(_*)link$/, '$1_key')
 
 
     function key_id(string) { return string.match(/\/?[^\/]+\/(\d+)/)[1] }
@@ -2220,12 +2208,12 @@
     var api = ['cache backup_cache get set forget del fire dirty get_once',
                'subspace bindings run_handler bind unbind reactive uncallback',
                'versions new_version',
-               'link aget',
+               'aget',
                'funk_key funk_name funks key_id key_name id',
                'pending_gets gets_in gets_out loading_keys loading once',
                'global_funk busses rerunnable_funks',
-               'escape_keys unescape_keys translate_keys translate_links apply_patch',
-               'keyed_2_proxied proxied_2_keyed translate_fields',
+               'translate_keys translate_links apply_patch',
+               'translate_fields escape_to_bus unescape_from_bus escape_to_nelson unescape_from_nelson',
                'ws_mount net_automount message_method',
                'parse Set One_To_Many clone extend deep_map deep_equals prune validate sorta_diff log deps symbols'
               ].join(' ').split(' ')
