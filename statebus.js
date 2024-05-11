@@ -1757,8 +1757,8 @@
     //
     var escape_field_to_bus        = (field) => field.replace(/^(_*)key$/, '$1_key'),
         unescape_field_from_bus    = (field) => field.replace(/^(_*)_key$/, '$1key'),
-        escape_field_to_nelson     = (field) => field.replace(/^(_*)link$/, '$1_key'),
-        unescape_field_from_nelson = (field) => field.replace(/^(_*)link$/, '$1_key')
+        escape_field_to_nelson     = (field) => field.replace(/^(_*)link$/, '$1_link'),
+        unescape_field_from_nelson = (field) => field.replace(/^(_*)link$/, '$1_link')
 
     var escape_to_bus              = (obj)   => translate_fields(obj, escape_field_to_bus)
         unescape_from_bus          = (obj)   => translate_fields(obj, unescape_field_from_bus)
