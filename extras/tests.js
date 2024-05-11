@@ -325,7 +325,7 @@ test(function translate_fields (done) {
     // Test 1
     var tests = tests1
     for (var i=0; i<tests.length; i++) {
-        var trans = bus.translate_fields(tests[i][0], bus.unescape_from_bus)
+        var trans = bus.unescape_from_bus(tests[i][0])
         assert(bus.deep_equals(trans, tests[i][1]),
                'Bad translation1: ' + i + ' ' + JSON.stringify(trans))
     }
@@ -333,7 +333,7 @@ test(function translate_fields (done) {
     // Test 2
     tests = tests2
     for (var i=0; i<tests2.length; i++) {
-        var trans = bus.translate_fields(tests[i][0], bus.escape_to_bus)
+        var trans = bus.escape_to_bus(tests[i][0])
         assert(bus.deep_equals(trans, tests[i][1]),
                'Bad translation2: ' + i + ' ' + JSON.stringify(trans))
     }

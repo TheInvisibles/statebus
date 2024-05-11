@@ -1343,11 +1343,11 @@
 
                     // Compute the new path
                     var new_path = path + '[' + JSON.stringify(k) + ']'
-                    return item_proxy(base, new_path, o[escape_to_bus(k)])
+                    return item_proxy(base, new_path, o[escape_field_to_bus(k)])
                 },
                 set: function set(o, k, v) {
-                    var value = translate_fields(v, field => escape_to_bus(escape_to_nelson(field)))
-                    o[escape_to_bus(k)] = value
+                    var value = translate_fields(v, field => escape_field_to_bus(escape_field_to_nelson(field)))
+                    o[escape_field_to_bus(k)] = value
                     var new_path = path + '[' + JSON.stringify(k) + ']'
                     bus.set(
                         base,
@@ -1357,11 +1357,11 @@
                     return true
                 },
                 has: function has(o, k) {
-                    return o.hasOwnProperty(escape_to_bus(k))
+                    return o.hasOwnProperty(escape_field_to_bus(k))
                 },
                 deleteProperty: function del (o, k) {
                     var new_path = path + '[' + JSON.stringify(k) + ']'
-                    delete o[escape_to_bus(k)]
+                    delete o[escape_field_to_bus(k)]
                     bus.set(
                         base,
                         // Forward the patch too
@@ -1372,7 +1372,7 @@
                 // For function proxies:
                 //
                 // apply: function apply (o, This, args) {
-                //     return translate_fields(o, unescape_from_bus)
+                //     return translate_fields(o, unescape_field_from_bus)
                 // }
             })}
 
@@ -1394,12 +1394,12 @@
             set: function set(o, key, val) {
                 bus.set({
                     key: key,
-                    val: translate_fields(val, field => escape_to_bus(escape_to_nelson(field)))
+                    val: translate_fields(val, field => escape_field_to_bus(escape_field_to_nelson(field)))
                 })
                 return true
             },
             deleteProperty: function del (o, k) {
-                bus.delete(escape_to_bus(k))
+                bus.delete(escape_field_to_bus(k))
                 return true // Report success to Proxy
             },
             // For function proxies:
@@ -1755,11 +1755,15 @@
     //  - nelSON            escapes link -> _link
     //  - JSON
     //
-    var escape_to_bus        = (field) => field.replace(/^(_*)key$/, '$1_key'),
-        unescape_from_bus    = (field) => field.replace(/^(_*)_key$/, '$1key'),
-        escape_to_nelson     = (field) => field.replace(/^(_*)link$/, '$1_key'),
-        unescape_from_nelson = (field) => field.replace(/^(_*)link$/, '$1_key')
+    var escape_field_to_bus        = (field) => field.replace(/^(_*)key$/, '$1_key'),
+        unescape_field_from_bus    = (field) => field.replace(/^(_*)_key$/, '$1key'),
+        escape_field_to_nelson     = (field) => field.replace(/^(_*)link$/, '$1_key'),
+        unescape_field_from_nelson = (field) => field.replace(/^(_*)link$/, '$1_key')
 
+    var escape_to_bus              = (obj)   => translate_fields(obj, escape_field_to_bus)
+        unescape_from_bus          = (obj)   => translate_fields(obj, unescape_field_from_bus)
+        escape_to_nelson           = (obj)   => translate_fields(obj, escape_field_to_nelson)
+        unescape_from_nelson       = (obj)   => translate_fields(obj, unescape_field_from_nelson)
 
     function key_id(string) { return string.match(/\/?[^\/]+\/(\d+)/)[1] }
     function key_name(string) { return string.match(/\/?([^\/]+).*/)[1] }

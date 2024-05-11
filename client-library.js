@@ -575,7 +575,18 @@
     // ================================================================
     // React v12 Support
 
-    bus.libs.react12.improve_react = () => {
+    bus.libs.react12.reactive_dom = () => {
+
+        // The window.dom object lets the user define new react components as
+        // functions
+        window.dom = window.dom || new Proxy({}, {
+            get: function (o, k) { return o[k] },
+            set: function (o, k, v) {
+                o[k] = v
+                window[k] = make_component(k, v)
+                return true
+            }
+        })
 
         function better_element(el) {
             // To do:
@@ -661,7 +672,7 @@
 
         make_better_input("INPUT", window.INPUT)
         make_better_input("TEXTAREA", window.TEXTAREA)
-        make_syncarea()
+        // make_syncarea()
 
         // Make IMG accept data from state:
         var og_img = window.IMG
@@ -690,6 +701,23 @@
             return React.DOM.title({dangerouslySetInnerHTML: {__html: escape_html(s)}})
         }
     }
+
+    bus.libs.react12.coffreact = () => {
+        bus.libs.react12.reactive_dom()
+        load_coffee()
+        if (dom.BODY)
+            document.addEventListener(
+                'DOMContentLoaded',
+                () => {
+                    React.render((window.Body || window.body || window.BODY)(), document.body)
+                },
+                false
+            )
+    }
+
+
+    // ================================================================
+    // React v17 Support
 
     bus.libs.react17.reactive_dom = () => {
         // The window.dom object lets the user define new react components as
