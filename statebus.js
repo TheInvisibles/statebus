@@ -2239,13 +2239,16 @@
     bus.libs = {}
 
     if (nodejs)
-        require('./server-library').import_server(bus, make_bus, options)
+        // Use require.call() instead of require() to fool jsdelivr.net into ignoring the require
+        require.call(null, './server-library').import_server(bus, make_bus, options)
     
     bus.render_when_loading = true
     return bus
 }
 
-if (nodejs) require('./server-library').import_module(make_bus)
+if (nodejs)
+    // Use require.call() instead of require() to fool jsdelivr.net into ignoring the require
+    require.call(null, './server-library').import_module(make_bus)
 
 return make_bus
 }))
