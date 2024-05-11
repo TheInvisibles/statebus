@@ -1305,6 +1305,10 @@
         // get_base: Symbol('get_base')
     }
     function make_proxy () {
+        // var custom_inspect_symbol = nodejs && require('util').inspect.custom,
+        //     custom_inspect = function (depth, options) {
+        //         return '3333333333';// util.inspect(bus.unescape_from_nelson(this), options)
+        //     }
         function item_proxy (base, path, o) {
 
             // Primitives pass through unscathed
@@ -1336,6 +1340,8 @@
                 get: function get(o, k) {
                     if (k === 'inspect' || k === 'valueOf')
                         return undefined
+                    // if (custom_inspect && k === custom_inspect)
+                    //     return custom_inspect
                     if (k === symbols.is_proxy)
                         return true
                     if (typeof k === 'symbol')
@@ -1343,7 +1349,7 @@
 
                     // Compute the new path
                     var new_path = path + '[' + JSON.stringify(k) + ']'
-                    return item_proxy(base, new_path, o[escape_field_to_bus(k)])
+                    return item_proxy(base, new_path, o[escape_field_to_nelson(escape_field_to_bus(k))])
                 },
                 set: function set(o, k, v) {
                     var value = translate_fields(v, field => escape_field_to_bus(escape_field_to_nelson(field)))
@@ -1357,6 +1363,8 @@
                     return true
                 },
                 has: function has(o, k) {
+                    // if (custom_inspect && k === custom_inspect)
+                    //     return true
                     return o.hasOwnProperty(escape_field_to_bus(k))
                 },
                 deleteProperty: function del (o, k) {
@@ -1423,7 +1431,7 @@
             header: function (x) {
                 if (x[symbols.is_proxy])
                     return ['span', {style: 'background-color: #fffbe5; padding: 3px;'},
-                            JSON.stringify(x)]
+                            JSON.stringify(unescape_from_nelson(unescape_from_bus(x)))]
                 // For function proxies:
                 // JSON.stringify(x(), null, 2)]
             },
@@ -1737,7 +1745,8 @@
         else if (typeof json === 'object' && json !== null) {
             var new_obj = {}
             for (var k in json)
-                new_obj[translate(k, json)] = translate_fields(json[k], translate)
+                if (typeof k === 'string')
+                    new_obj[translate(k, json)] = translate_fields(json[k], translate)
             result = new_obj
         }
 
@@ -1755,15 +1764,19 @@
     //  - nelSON            escapes link -> _link
     //  - JSON
     //
-    var escape_field_to_bus        = (field) => field.replace(/^(_*)key$/, '$1_key'),
-        unescape_field_from_bus    = (field) => field.replace(/^(_*)_key$/, '$1key'),
-        escape_field_to_nelson     = (field) => field.replace(/^(_*)link$/, '$1_link'),
-        unescape_field_from_nelson = (field) => field.replace(/^(_*)link$/, '$1_link')
+    var escape_field_to_bus        = (field) => field_replace(field, /^(_*)key$/, '$1_key'),
+        unescape_field_from_bus    = (field) => field_replace(field, /^(_*)_key$/, '$1key'),
+        escape_field_to_nelson     = (field) => field_replace(field, /^(_*)link$/, '$1_link'),
+        unescape_field_from_nelson = (field) => field_replace(field, /^(_*)_link$/, '$1link')
 
     var escape_to_bus              = (obj)   => translate_fields(obj, escape_field_to_bus)
         unescape_from_bus          = (obj)   => translate_fields(obj, unescape_field_from_bus)
         escape_to_nelson           = (obj)   => translate_fields(obj, escape_field_to_nelson)
         unescape_from_nelson       = (obj)   => translate_fields(obj, unescape_field_from_nelson)
+
+    var field_replace = (field, pattern, replacement) => (typeof field === 'string'
+                                                          ? field.replace(pattern, replacement)
+                                                          : field)
 
     function key_id(string) { return string.match(/\/?[^\/]+\/(\d+)/)[1] }
     function key_name(string) { return string.match(/\/?([^\/]+).*/)[1] }

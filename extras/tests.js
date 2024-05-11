@@ -296,11 +296,15 @@ test(function url_translation (done) {
 })
 
 test(function proxy_link (done) {
-    console.log('lets test')
-
     bus.state.link_from = [{link: 'link_to'}]
     bus.state.link_to = 3
     assert(bus.state.link_from[0] !== 3, 'Link got linkified')
+    console.log('link_from is', bus.state.link_from)
+    var pass = bus.deep_equals(bus.state.link_from, [{link: 'link_to'}])
+    console.log('pass is', pass)
+    assert(pass, 'Failed proxy link unlinky test')
+
+    // assert(bus.deep_equals(bus.state.link_from, [{link: 'link_to'}]), 'Link_from looks wrong')
 
     done()
 })
