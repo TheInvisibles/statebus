@@ -1337,7 +1337,7 @@
 
 
             return new Proxy(o, {
-                get: function get(o, k) {
+                get: function (o, k) {
                     if (k === 'inspect' || k === 'valueOf')
                         return undefined
                     // if (custom_inspect && k === custom_inspect)
@@ -1349,11 +1349,11 @@
 
                     // Compute the new path
                     var new_path = path + '[' + JSON.stringify(k) + ']'
-                    return item_proxy(base, new_path, o[escape_field_to_nelson(escape_field_to_bus(k))])
+                    return item_proxy(base, new_path, o[escape_field_to_bus(escape_field_to_nelson(k))])
                 },
-                set: function set(o, k, v) {
+                set: function (o, k, v) {
                     var value = translate_fields(v, field => escape_field_to_bus(escape_field_to_nelson(field)))
-                    o[escape_field_to_bus(k)] = value
+                    o[escape_field_to_bus(escape_field_to_nelson(k))] = value
                     var new_path = path + '[' + JSON.stringify(k) + ']'
                     bus.set(
                         base,
@@ -1362,14 +1362,20 @@
                     )
                     return true
                 },
-                has: function has(o, k) {
+                has: function (o, k) {
                     // if (custom_inspect && k === custom_inspect)
                     //     return true
-                    return o.hasOwnProperty(escape_field_to_bus(k))
+                    return o.hasOwnProperty(escape_field_to_bus(escape_field_to_nelson(k)))
+                },
+                ownKeys: function () {
+                    return Object.keys(o).map(unescape_field_from_nelson).map(unescape_field_from_bus)
+                },
+                getOwnPropertyDescriptor: function (target, key) {
+                    return { enumerable: true, configurable: true, value: this.get(o, key) }
                 },
                 deleteProperty: function del (o, k) {
                     var new_path = path + '[' + JSON.stringify(k) + ']'
-                    delete o[escape_field_to_bus(k)]
+                    delete o[escape_field_to_bus(escape_field_to_nelson(k))]
                     bus.set(
                         base,
                         // Forward the patch too
@@ -1429,9 +1435,10 @@
     if (!nodejs)
         window.devtoolsFormatters = [{
             header: function (x) {
-                if (x[symbols.is_proxy])
+                if (x[symbols.is_proxy]) {
                     return ['span', {style: 'background-color: #fffbe5; padding: 3px;'},
-                            JSON.stringify(unescape_from_nelson(unescape_from_bus(x)))]
+                            JSON.stringify(x)]
+                }
                 // For function proxies:
                 // JSON.stringify(x(), null, 2)]
             },
