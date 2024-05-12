@@ -95,22 +95,22 @@
     function set (obj, t) {
         // First let's handle patches.  We receive them as:
         //
-        //     set("foo", {patch: ['.foo.bar = "blah"]})
+        //     set("foo", {patches: [{...}, ...]})
         //
         // Note the `obj` will actually be a string, set to the key in this case.
         //
-        if (typeof obj === 'string' && t && t.patch) {
-            if (typeof t.patch == 'string') t.patch = [t.patch]
+        if (typeof obj === 'string' && t && t.patches) {
+            if (!Array.isArray(t.patches)) t.patches = [t.patches]
             // Apply the patch locally
             var key = obj,
                 obj = bus.cache[key]
 
-            console.log('set: applying the patch!', {
+            console.log('set: applying the patches!', {
                 key: key,
                 obj: obj,
-                patch: t.patch[0]
+                patches: t.patches[0]
             })
-            obj.val = apply_patch(obj.val, t.patch[0])
+            obj.val = apply_patch(obj.val, t.patches[0])
         }
 
         if (!('key' in obj) || typeof obj.key !== 'string') {
@@ -188,22 +188,22 @@
 
         // Handle patches.  We receive them as:
         //
-        //     set.fire("foo", {patch: ['.foo.bar = "blah"]})
+        //     set.fire("foo", {patches: [{...}, ...]})
         //
         // Note the `obj` will actually be a string, set to the key in this case.
         //
         if (typeof obj === 'string' && t && t.patch) {
-            if (typeof t.patch == 'string') t.patch = [t.patch]
-            // Apply the patch locally
+            if (!Array.isArray(t.patches)) t.patches = [t.patches]
+            // Apply the patches locally
             var key = obj,
                 obj = bus.cache[key]
 
-            // console.log('set.fire: applying the patch!', {
+            // console.log('set.fire: applying the patches!', {
             //     key: key,
             //     obj: obj,
-            //     patch: t.patch[0]
+            //     patch: t.patches[0]
             // })
-            obj.val = apply_patch(obj.val, t.patch[0])
+            obj.val = apply_patch(obj.val, t.patches[0])
         }
 
         // Print a statelog entry
@@ -1357,8 +1357,10 @@
                     var new_path = path + '[' + JSON.stringify(k) + ']'
                     bus.set(
                         base,
-                        // Forward the patch too
-                        {patch: [new_path + ' = ' + JSON.stringify(v)]}
+                        // Forward the patches too
+                        {patches: [{unit: 'json',
+                                    range: new_path,
+                                    content: JSON.stringify(v)}]}
                     )
                     return true
                 },
@@ -1378,8 +1380,10 @@
                     delete o[escape_field_to_bus(escape_field_to_nelson(k))]
                     bus.set(
                         base,
-                        // Forward the patch too
-                        {patch: [new_path + ' = ']}
+                        // Forward the patches too
+                        {patches: [{unit: 'json',
+                                    range: new_path,
+                                    content: undefined}]}
                     )
                     return true // Report success to Proxy
                 }
@@ -1517,8 +1521,8 @@
             var x = {set: obj}
             if (t.version) x.version = t.version
             if (t.parents) x.parents = t.parents
-            if (t.patch)   x.patch   = t.patch
-            if (t.patch)   x.set    = rem_prefix(x.set.key)
+            if (t.patches) x.patches = t.patches
+            if (t.patches) x.set     = rem_prefix(x.set.key)
             send(x)
         }
         bus(prefix).getter  = function (key) { send({get: key}),
@@ -1619,24 +1623,24 @@
                     bus.log('net client received', message)
                     var t = {version: message.version,
                              parents: message.parents,
-                             patch: message.patch}
+                             patches: message.patches}
 
                     var obj
 
-                    // Are we receiving a patch?
-                    if (message.patch && typeof message.set === 'string') {
+                    // Are we receiving a patches?
+                    if (message.patches && typeof message.set === 'string') {
                         // Then message.set is a key, and we are applying a
                         // patch to the data at that key
                         var key = message.set
                         obj = apply_patch(bus.cache[key] && bus.cache[key].val,
-                                          message.patch[0])
+                                          message.patches[0])
                     }
 
                     // Then we're receiving the full state as an object
                     else
                         obj = message.set
 
-                    if (!(t.version||t.parents||t.patch))
+                    if (!(t.version||t.parents||t.patches))
                         t = undefined
 
                     bus.set.fire(add_prefixes(message.set), t)
@@ -1796,9 +1800,9 @@
         // The final object can be a slice
         // Set the value in the final object
 
-        var match = patch.match(/(.*) = (.*)/),
-            path = match[1],
-            new_stuff = match[2].length ? JSON.parse(match[2]) : undefined
+        console.assert(patch.unit === 'json', "Can't apply non-json patches")
+
+        var path = patch.range, new_stuff = JSON.parse(patch.content)
 
         var path_segment = /^(\.?([^\.\[]+))|(\[((-?\d+):)?(-?\d+)\])|\[("(\\"|[^"])*")\]/
         var curr_obj = obj,

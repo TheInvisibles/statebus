@@ -229,13 +229,10 @@ function import_server (bus, make_statebus, options)
 
                 var patches = req.patches().then(patches => {
                     console.log("...and we see these patches:", patches)
-                    var statebus_patches = patches.map(patch =>
-                        patch.range + ' = ' + patch.content
-                    )
                     var cbus = bus.bus_for_http_client(req, res)
                     var key = req.url.substr(1)
                     cbus.get_once(key, (obj) => {
-                        cbus.set(key, {patch: statebus_patches})
+                        cbus.set(key, {patches})
                         res.sendStatus(200)
                         console.log('We just processed a patch!')
                     })
@@ -463,8 +460,8 @@ function import_server (bus, make_statebus, options)
                 var msg = {set: obj}
                 if (t.version) msg.version = t.version
                 if (t.parents) msg.parents = t.parents
-                if (t.patch)   msg.patch =   t.patch
-                if (t.patch)   msg.set    = msg.set.key
+                if (t.patches)   msg.patches =   t.patches
+                if (t.patches)   msg.set    = msg.set.key
                 msg = JSON.stringify(msg)
 
                 if (master.simulate_network_delay) {
@@ -489,7 +486,7 @@ function import_server (bus, make_statebus, options)
                           ||
                           (method === 'set'
                            && master.validate(message, {set: '*',
-                                                        '?parents': 'array', '?version': 'string', '?patch': 'array'})
+                                                        '?parents': 'array', '?version': 'string', '?patches': 'array'})
                            && (typeof(message.set) === 'string'
                                || (typeof(message.set) === 'object'
                                    && typeof(message.set.key === 'string'))))
@@ -522,10 +519,10 @@ function import_server (bus, make_statebus, options)
                     break
                 case 'set':
                     message.version = message.version || client.new_version()
-                    if (message.patch) {
+                    if (message.patches) {
                         var o = bus.cache[message.set] || {key: message.set}
                         try {
-                            message.set = bus.apply_patch(o.val, message.patch[0])
+                            message.set = bus.apply_patch(o.val, message.patches[0])
                         } catch (e) {
                             console.error('Received bad sockjs message from '
                                           + conn.remoteAddress +': ', message, e)
@@ -535,7 +532,7 @@ function import_server (bus, make_statebus, options)
                     client.set(message.set,
                                 {version: message.version,
                                  parents: message.parents,
-                                 patch: message.patch})
+                                 patches: message.patches})
                     if (our_gets_in[message.set.key]) {  // Store what we've seen if we
                                                              // might have to publish it later
                         client.log('Adding', message.set.key+'#'+message.version,

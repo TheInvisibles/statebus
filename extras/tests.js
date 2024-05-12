@@ -107,6 +107,15 @@ test(function applying_patches (done) {
         [[1,2,3], '[-1:-0] = [0, 0, 0]', [1, 2, 0, 0, 0]]
     ]
 
+    // Convert to braid patch format
+    for (var i=0; i<tests.length; i++) {
+        var match = tests[i][1].match(/(.*) = (.*)/)
+        tests[i][1] = {unit: 'json',
+                       range: match[1],
+                       content: match[2]}
+    }
+
+    // Test them
     for (var i=0; i<tests.length; i++) {
         var x = bus.apply_patch(tests[i][0], tests[i][1])
         assert(bus.deep_equals(x, tests[i][2]),

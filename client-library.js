@@ -147,14 +147,8 @@
             if (t.parents) put.parents = t.parents
 
             // Do we have patches?
-            if (t.patch) {
-                put.patches = t.patch.map(patch => {
-                    var match = patch.match(/(.*) = (.*)/),
-                        range = match[1],
-                        content = match[2]
-                    return {unit: 'json', range, content}
-                })
-            }
+            if (t.patches) put.patches = t.patches
+
             // Then we just have a simple body.
             else put.body = JSON.stringify(obj.val)
 
@@ -222,7 +216,7 @@
                         // credentials: 'include'
                     }
                 ).then(res => res.subscribe(
-                    new_version => {
+                    update => {
                         // New update received!
                         if (subscriptions[key].status === 'connecting') {
                             console.log('%c[*] opened ' + key,
@@ -233,17 +227,15 @@
                         }
 
                         // Return the update
-                        if (new_version.body)
+                        if (update.body)
                             // As a snapshot body
                             t.return({
                                 key: key,
-                                val: add_prefixes(JSON.parse(new_version.body))
+                                val: add_prefixes(JSON.parse(update.body))
                             })
-                        else if (new_version.patches)
+                        else if (update.patches)
                             // As a patch
-                            bus.set.fire(key, {patch: new_version.patches.map(
-                                patch => patch.range + ' = ' + patch.content
-                            )})
+                            bus.set.fire(key, {patches: update.patches})
                     },
                     reconnect
                 )).catch(reconnect)
