@@ -1,6 +1,6 @@
 {
   "name": "statebus",
-  "version": "7.0.30",
+  "version": "7.0.31",
   "description": "Synchronize state.",
   "main": "statebus.js",
   "scripts": {
@@ -15,7 +15,8 @@
     "extras/tests.js",
     "extras/tcp-bind.js",
     "extras/coffee.js",
-    "extras/sockjs.js"
+    "extras/sockjs.js",
+    "extras/react12.min.js"
   ],
   "dependencies": {
     "bcrypt-nodejs": "0.0.3",
