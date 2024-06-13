@@ -487,7 +487,7 @@
     // *****************
     // Re-rendering react components
     var re_render_scheduled = false
-    re_rendering = false
+    var re_rendering = false
     function schedule_re_render() {
         if (!re_render_scheduled) {
             requestAnimationFrame(function () {
@@ -658,7 +658,8 @@
                     if (this.state.value) new_props.value = this.state.value
                     new_props.onChange = this.onChange
                     return element(new_props)
-                }
+              
+              }
             }))
         }
 
@@ -725,12 +726,12 @@
 
         // We'll define functions for all HTML tags...
         var function_for_tag = (tag) =>
-            (...arguments) => {
+            (...args) => {
                 var children = []
                 var attrs = {style: {}}
                 
-                for (var i=0; i<arguments.length; i++) {
-                    var arg = arguments[i]
+                for (var i=0; i<args.length; i++) {
+                    var arg = args[i]
 
                     if (arg === undefined)
                         continue
