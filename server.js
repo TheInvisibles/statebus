@@ -48,7 +48,7 @@ function import_server (bus, options)
 
     serve: function serve (options) {
         var master = bus
-        bus.honk = 'statelog'
+        bus.honk = options.honk ?? 'statelog'
         master.label = 'master'
 
         // Initialize Options
