@@ -967,6 +967,34 @@ test(function braid_proxies (done) {
     // Getting a normal property should do a fetch
 })
 
+test(function key_patterns (done) {
+    bus('path/:pattern/stuff*').to_fetch = function (key, key_parts, t) {
+        t.done({ key: key, key_parts, val: 3 })
+    }
+    
+    bus.fetch_once('path/foo/stuff(yes:maam,okay)', (o) => {
+        assert(o.val === 3)
+        assert(o.key_parts.pattern === 'foo')
+        done()
+    })
+})
+
+test(function kson (done) {
+    bus('kson_stuff/foo/stuff*').to_fetch = function (key, kson, t) {
+        t.done({
+            key: key,
+            kson: kson
+        })
+    }
+    
+    bus.fetch_once('kson_stuff/foo/stuff(yes:maam,okay)', (o) => {
+        console.log(o)
+        assert(o.kson.yes === 'maam')
+        assert(o.kson.okay)
+        done()
+    })
+})
+
 test(function only_one (done) {
     bus('only_one/*').to_fetch = function (k) {
         var id = k[k.length-1]
