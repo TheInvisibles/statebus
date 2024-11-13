@@ -296,10 +296,10 @@
     var id = 'bus-' + Math.random().toString(36).substring(7)
     bus.toString = function () { return bus.label || 'bus'+this_bus_num || id }
     bus.delete_bus = function () {
-        // // Forget all wildcard handlers
-        // for (var i=0; i<wildcard_handlers.length; i++) {
-        //     console.log('Forgetting', funk_name(wildcard_handlers[i].funk))
-        //     wildcard_handlers[i].funk.forget()
+        // // Forget all pattern handlers
+        // for (var i=0; i<pattern_handlers.length; i++) {
+        //     console.log('Forgetting', funk_name(pattern_handlers[i].funk))
+        //     pattern_handlers[i].funk.forget()
         // }
 
         // // Forget all handlers
@@ -642,7 +642,7 @@
                 func.defined = func.defined || []
                 func.defined.push({bus, method, key, as: 'handler'})
                 func.use_linked_json = true
-                bind(key, method, func, 'allow_wildcards')
+                bind(key, method, func, 'pattern')
             }
         }
         else {
@@ -655,12 +655,12 @@
                             func.defined = func.defined || []
                             func.defined.push(
                                 {as:'handler', bus:bus, method:method, key:key})
-                            bind(key, method, func, 'allow_wildcards')
+                            bind(key, method, func, 'pattern')
                         },
                         get: function () {
                             var result = bindings(key, method)
                             for (var i=0; i<result.length; i++) result[i] = result[i].func
-                            result.delete = function (func) { unbind (key, method, func, 'allow_wildcards') }
+                            result.delete = function (func) { unbind (key, method, func, 'pattern') }
                             return result
                         }
                     })
@@ -684,6 +684,8 @@
             case 'key':
             case 'k':
                 handler.args['key'] = i; break
+            case 'key_parts':
+                handler.args['key_parts'] = i; break
             case 'json':
             case 'vars':
                 handler.args['vars'] = i; break
@@ -702,44 +704,71 @@
                 handler.args['obj'] = i; break
             case 'old':
                 handler.args['old'] = i; break
+            case 'kson':
+                handler.args['kson'] = i; break
             }
     }
 
     // The funks attached to each key, maps e.g. 'get /point/3' to '/30'
     var handlers = new One_To_Many()
-    var wildcard_handlers = []  // An array of {prefix, method, funk}
+    var pattern_handlers = []  // An array of {pattern, method, funk}
 
     // A set of timers, for keys to send forgets on
     var to_be_forgotten = {}
-    function bind (key, method, func, allow_wildcards) {
-        bogus_check(key)
-        if (allow_wildcards && key[key.length-1] === '*')
-            wildcard_handlers.push({prefix: key,
-                                    method: method,
-                                    funk: func})
+    function bind (pattern, method, func, type) {
+        bogus_check(pattern)
+
+        function pattern_matcher (pattern) {
+            var param_names = []
+            var regex = new RegExp('^' + pattern.replace(/(?<=^|\/):[^/()]+|\*/g, match => {
+                // Replace * with .*
+                if (match === '*') return '.*'
+
+                // Replace :foo with ([^/]+), and remember the "foo" name
+                param_names.push(match.slice(1))
+                return '([^/]+)'
+            }) + '$')
+            
+            return path => {
+                var match = path.match(regex)
+                if (!match) return null
+                var params = {}
+                match.slice(1).forEach((val, i) => params[param_names[i]] = val)
+                return params
+            }
+        }
+
+        // Add patterns to the list, not the hash
+        if (type === 'pattern' && /[:*]/.test(pattern))  // Is it a pattern?
+            pattern_handlers.push({pattern: pattern,
+                                   matcher: pattern_matcher(pattern),
+                                   method: method,
+                                   funk: func})
+
+        // Add simple keys to the hash
         else
-            handlers.add(method + ' ' + key, funk_key(func))
+            handlers.add(method + ' ' + pattern, funk_key(func))
 
         // Now check if the method is a get and there's a getted
         // key in this space, and if so call the handler.
     }
-    function unbind (key, method, funk, allow_wildcards) {
-        bogus_check(key)
-        if (allow_wildcards && key[key.length-1] === '*')
-            // Delete wildcard connection
-            for (var i=0; i<wildcard_handlers.length; i++) {
-                var handler = wildcard_handlers[i]
-                if (handler.prefix === key
+    function unbind (pattern, method, funk, type) {
+        bogus_check(pattern)
+        if (type === 'pattern' && /[:*]/.test(pattern))  // Is it a pattern?
+            // Delete pattern connection
+            for (var i=0; i < pattern_handlers.length; i++) {
+                var handler = pattern_handlers[i]
+                if (handler.pattern === pattern
                     && handler.method === method
                     && handler.funk === funk) {
 
-                    wildcard_handlers.splice(i,1)  // Splice this element out of the array
-                    i--                            // And decrement the counter while we're looping
+                    pattern_handlers.splice(i,1)  // Splice this element out of the array
+                    i--                           // And decrement the counter while we're looping
                 }
             }
         else
             // Delete direct connection
-            handlers.delete(method + ' ' + key, funk_key(funk))
+            handlers.delete(method + ' ' + pattern, funk_key(funk))
     }
 
     function bindings(key, method) {
@@ -764,16 +793,20 @@
             }
         }
 
-        // Now iterate through prefixes
-        for (var i=0; i < wildcard_handlers.length; i++) {
-            handler = wildcard_handlers[i]
-
-            var prefix = handler.prefix.slice(0, -1)       // Cut off the *
-            if (prefix === key.substr(0,prefix.length)     // If the prefix matches
-                && method === handler.method               // And it has the right method
+        // Now iterate through patterns
+        for (var i=0; i < pattern_handlers.length; i++) {
+            handler = pattern_handlers[i]
+            var matches = handler.matcher(key)
+            if (matches                                // If the pattern matches
+                && method === handler.method           // And it has the right method
                 && !seen[funk_key(handler.funk)]) {
-                handler.funk.statebus_binding = {key:handler.prefix, method:method}
-                result.push({method:method, key:handler.prefix, func:handler.funk})
+
+                handler.funk.statebus_binding = {
+                    key: handler.pattern,
+                    method: method,
+                    params: matches
+                }
+                result.push({method, key:handler.pattern, func:handler.funk})
                 seen[funk_key(handler.funk)] = true
             }
         }
@@ -860,6 +893,46 @@
                 return 'Bad JSON "' + r + '" for key ' + key_arg()
             }
         }
+        // Parse out query params for URLs in the style /foo/bar(param1,param2:val2).
+        // We're currently calling that (param1,param2:val2) part "kson", and presuming
+        // that it exists in the * part of the pattern like in /foo/bar*.
+        function kson_args () {
+            // This code is copied from Raphael Walker's parser.coffee
+            function split_once (str, char) {
+                var i = str.indexOf(char)
+                return i === -1 ? [str, ""] : [str.slice(0, i), str.slice(i + 1)]
+            }
+
+            // KSON = Kinda Simple Object Notation
+            // but it rhymes with JSON
+            function parse_kson (str) {
+                // Coffeescript doesn't have object comprehensions :(
+                var ret = {}
+
+                // Now process the string:
+                str
+                    // Pull out the parentheses
+                    .slice(1, -1)
+                    // Split by commas. TODO: Allow spaces after commas?
+                    .split(",")
+                    // Delete empty parts (this ensures that empty strings
+                    // will properly result in empty KSON, and allows trailing
+                    // commas)
+                    .filter(part => part.length)
+                    .forEach(part => {
+                        // If the part has a comma, its a key:value, otherwise
+                        // it's just a singleton
+                        var [k, v] = split_once(part, ":")
+                        
+                        if (v.length === 0) ret[k] = true
+                        // If the value is itself a KSON object, parse it recursively
+                        else if (v.startsWith("(")) ret[k] = parse_kson(v)
+                        else ret[k] = v
+                    })
+                return ret
+            }
+            return parse_kson(rest_arg())
+        }
         var f = reactive(function () {
             // Initialize transaction
             t = clone(t || {})
@@ -934,6 +1007,9 @@
                 switch (k) {
                 case 'key':
                     args[func.args[k]] = key_arg(); break
+                case 'key_parts':
+                    args[func.args[k]] = func.statebus_binding && func.statebus_binding.params
+                    break
                 case 'rest':
                     args[func.args[k]] = rest_arg(); break
                 case 'vars':
@@ -947,6 +1023,8 @@
                     var key = key_arg()
                     args[func.args[k]] = bus.cache[key] || (bus.cache[key] = {key:key})
                     break
+                case 'kson':
+                    args[func.args[k]] = kson_args(rest_arg()); break
                 }
             }
 

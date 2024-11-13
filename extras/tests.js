@@ -870,6 +870,34 @@ test(function proxies (done) {
     // Getting a normal property should do a get
 })
 
+test(function key_patterns (done) {
+    bus.honk = 3
+    bus('path/:pattern/stuff*').getter = function (key, key_parts, t) {
+        t.done({ key: key, val: key_parts })
+    }
+    
+    bus.get_once('path/foo/stuff(yes:maam,okay)', (o) => {
+        assert(o.val.pattern === 'foo')
+        done()
+    })
+})
+
+test(function kson (done) {
+    bus('kson_stuff/foo/stuff*').getter = function (key, kson, t) {
+        t.done({
+            key: key,
+            val: {kson: kson}
+        })
+    }
+    
+    bus.get_once('kson_stuff/foo/stuff(yes:maam,okay)', (o) => {
+        console.log(o)
+        assert(o.val.kson.yes === 'maam')
+        assert(o.val.kson.okay)
+        done()
+    })
+})
+
 test(function only_one (done) {
     bus('only_one/*').getter = function (k) {
         var id = k[k.length-1]
