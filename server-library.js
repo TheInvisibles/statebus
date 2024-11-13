@@ -184,13 +184,13 @@ function import_server (bus, make_statebus, options)
             // console.log('http_in: doing cbus.get(', key, ')')
 
             var send_to_client = (o, t) => {
-                // console.trace('http_in: Sending update of', key)
+                console.log('http_in: Sending update of', {key, o, res})
                 var body = to_http_body(o)
 
                 // Note: if body === undefined, we need to send the
                 // equivalent of a 404.  This is missing in braid spec:
                 // https://github.com/braid-org/braid-spec/issues/110
-                res.sendVersion({body: body || 'null'})
+                res.sendUpdate({body: body || 'null'})
 
                 // And shut down the connection if there's no subscription
                 if (!req.subscribe)
