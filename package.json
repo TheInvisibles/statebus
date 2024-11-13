@@ -7,6 +7,13 @@
     "test": "node extras/tests.js"
   },
   "author": "Michael Toomim",
+  "files": [
+    "statebus.js",
+    "client.js",
+    "server.js",
+    "extras/",
+    "readme.md"
+  ],
   "repository": "invisible-college/statebus",
   "dependencies": {
     "bcrypt-nodejs": "0.0.3",
