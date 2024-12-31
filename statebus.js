@@ -663,7 +663,7 @@
 
         function pattern_matcher (pattern) {
             var param_names = []
-            var regex = new RegExp('^' + pattern.replace(/(?<=^|\/):[^/()]+|\*/g, match => {
+            var regex = new RegExp('^' + pattern.replace(/(?<=^|\/):[^/()]+|\*/g, function (match) {
                 // Replace * with .*
                 if (match === '*') return '.*'
 
@@ -672,11 +672,11 @@
                 return '([^/]+)'
             }) + '$')
             
-            return path => {
+            return function (path) {
                 var match = path.match(regex)
                 if (!match) return null
                 var params = {}
-                match.slice(1).forEach((val, i) => params[param_names[i]] = val)
+                match.slice(1).forEach(function (val, i) { return params[param_names[i]] = val} )
                 return params
             }
         }
@@ -856,8 +856,8 @@
                     // Delete empty parts (this ensures that empty strings
                     // will properly result in empty KSON, and allows trailing
                     // commas)
-                    .filter(part => part.length)
-                    .forEach(part => {
+                    .filter(function (part) { return part.length })
+                    .forEach(function (part) {
                         // If the part has a comma, its a key:value, otherwise
                         // it's just a singleton
                         var [k, v] = split_once(part, ":")
