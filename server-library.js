@@ -1,12 +1,9 @@
 var fs = require('fs'),
     util = require('util')
 
-var braidify = require('braid-http').http_server
-
 
 function default_options (bus) { return {
     port: 'auto',
-    backdoor: null,
     client: (c) => {c.shadows(bus)},
     file_store: {save_delay: 250, filename: 'db', backup_dir: 'backups', prefix: '*'},
     sync_files: [{state_path: 'files', fs_path: null}],
@@ -14,9 +11,11 @@ function default_options (bus) { return {
     certs: {private_key: 'certs/private-key',
             certificate: 'certs/certificate',
             certificate_bundle: 'certs/certificate-bundle'},
-    connections: {include_users: true, edit_others: true},
+    connections: {include_users: true, edit_others: true},   // Only for websockets
+    websocket: false,
     websocket_path: '_connect_to_statebus_',
-    __secure: false
+    free_cors: true,
+    __secure: false   // Only for websocket for connections state.  Deprecate soon.
 }}
 
 function set_options (bus, options) {
@@ -53,40 +52,43 @@ function import_server (bus, make_statebus, options)
             || require('fs').existsSync(bus.options.certs.certificate)
             || require('fs').existsSync(bus.options.certs.certificate_bundle))
 
-        function c (client, conn) {
-            client.honk = bus.honk
-            client.serves_auth(conn, master)
-            bus.options.client && bus.options.client(client, conn)
-        }
-        if (!bus.options.client) c = undefined // no client bus when programmer explicitly says so
+        // Create the client
+        if (bus.options.client)
+            // Todo: rewrite this func
+            bus.custom_clients = (client, client_id) => {
+                client.honk = bus.honk
+                client.serves_auth(master)
+                bus.options.client && bus.options.client(client)
+            }
 
-        if (bus.options.file_store)
-            bus.file_store()
-
-        // ******************************************
-        // ***** Create our own http server *********
+        // Create HTTP server
         bus.make_http_server({port: bus.options.port, use_ssl})
-        bus.sockjs_server(this.http_server, c) // Serve via sockjs on it
+        if (bus.options.websocket)
+            bus.sockjs_server(this.http_server)   // Serve via sockjs on it
         var express = require('express')
         bus.express = express()
         bus.http = express.Router()
         bus.install_express(bus.express)
-
-        // use gzip compression if available
-        try { bus.http.use(require('compression')())
-              console.log('Enabled http compression!') } catch (e) {}
-
-        // Initialize file sync
-        ; (bus.options.sync_files || []).forEach( x => {
-            if (require('fs').existsSync(x.fs_path || x.state_path))
-                bus.sync_files(x.state_path, x.fs_path)
-        })
 
         // User will put his routes in here
         bus.express.use(bus.http)
 
         // Connect bus to the HTTP server
         bus.express.use(bus.http_in)
+
+        // use gzip compression if available
+        try { bus.http.use(require('compression')())
+              console.log('Enabled http compression!') } catch (e) {}
+
+        // Initialize storage
+        if (bus.options.file_store)
+            bus.file_store()
+
+        // Initialize file sync
+        ; (bus.options.sync_files || []).forEach( x => {
+            if (require('fs').existsSync(x.fs_path || x.state_path))
+                bus.sync_files(x.state_path, x.fs_path)
+        })
 
         // Serve Client Coffee
         bus.serve_client_coffee()
@@ -124,130 +126,156 @@ function import_server (bus, make_statebus, options)
             }
             return handlers.length
         }
-
-        // Back door to the control room
-        if (bus.options.backdoor) {
-            bus.make_http_server({
-                port: bus.options.backdoor,
-                name: 'backdoor_http_server',
-                use_ssl: use_ssl
-            })
-            bus.sockjs_server(this.backdoor_http_server)
-        }
     },
+
 
     // Connect HTTP GET and PUT to our Get and Set
     http_in: function (req, res, next) {
+        // Log this request!
         if (bus.honk)
-            console.log(req.method, req.url, req.headers.subscribe
+            console.log('IN:', req.method, decodeURIComponent(req.url), req.headers.subscribe
                         ? 'Subscribe: ' + req.headers.subscribe : '')
 
-        braidify(req, res)
-
-        // If this requests knows about Braid then we presume the programmer
+        // If this request knows about Braid then we presume the programmer
         // knows that any client might make this cross-origin request.
         if (req.headers.version || req.headers.parents || req.headers.subscribe
             || req.headers.peer || req.headers['put-order']
-            || req.method === 'OPTIONS')
+            || req.method === 'OPTIONS' || bus.options?.free_cors)
             free_the_cors(req, res)
         if (req.method === 'OPTIONS')
             return
 
-        // Initialize new clients with an id.  We put the client id on
-        // req.client, and also in a cookie for the browser to see.
-        req.peer = //req.headers.peer ||
-            require('cookie').parse(req.headers.cookie || '').peer
-        if (!req.peer) {
-            req.peer = (Math.random().toString(36).substring(2)
-                        + Math.random().toString(36).substring(2)
-                        + Math.random().toString(36).substring(2))
-
-            res.setHeader('Set-Cookie', 'peer=' + req.peer
-                          + '; Expires=21 Oct 2055 00:0:00 GMT;')
+        // Give up on methods we can't handle
+        if (!['GET', 'PUT', 'DELETE'].includes(req.method)) {
+            res.setHeader('Allow', 'GET, PUT, DELETE')
+            res.statusCode = 405
+            res.end()
+            return
         }
 
-        // Handle the GET or PUT request!
+        // Braidify the req and res
+        require('braid-http').http_server(req, res)
+
+        // Initialize new clients with an id.  We put the client id on
+        // req.client, and also in a cookie for the browser to see.
+        var client_id = req.headers.peer ||
+                require('cookie').parse(req.headers.cookie || '').peer
+
+        if (!client_id)
+            client_id = (Math.random().toString(36).substring(2)
+                         + Math.random().toString(36).substring(2)
+                         + Math.random().toString(36).substring(2))
+        
+        // Add peer to response cookie, so client knows we've named it
+        var expires = new Date()
+        expires.setFullYear(expires.getFullYear() + 20)
+        res.setHeader('Set-Cookie', 'peer=' + client_id
+                      + '; Expires=' + expires.toUTCString() + ';')
+
+        // Decode the key
+        var key = decodeURIComponent(req.url.substr(1))
+
+        // Make the client bus
+        var client_bus = bus.client_bus_for(client_id)
+
+        // Handle a GET!
         if (req.method === 'GET') {
-            var key = req.url.substr(1)
-
-            // Make a temporary client bus
-            var cbus = bus.bus_for_http_client(req, res)
-
             if (req.subscribe)
-                res.startSubscription({ onClose: end_subscription })
+                res.startSubscription({ onClose: close_subscription })
             else
                 res.statusCode = 200
 
-            // We only return JSON
+            // We assume all content is JSON
             res.setHeader('Content-Type', 'application/json')
 
-            // console.log('http_in: doing cbus.get(', key, ')')
+            function send_update (obj, t) {
+                var body = to_http_body(obj)
+                // console.log('http_in: Sending update of', body)
 
-            var send_to_client = (o, t) => {
-                console.log('http_in: Sending update of', {key, o, res})
-                var body = to_http_body(o)
-
-                // Note: if body === undefined, we need to send the
-                // equivalent of a 404.  This is missing in braid spec:
-                // https://github.com/braid-org/braid-spec/issues/110
-                res.sendUpdate({body: body || 'null'})
+                res.sendUpdate({
+                    body,
+                    // If body === undefined, send 404
+                    status: body === undefined ? 404 : 200
+                })
 
                 // And shut down the connection if there's no subscription
                 if (!req.subscribe)
-                    end_subscription()
+                    close_subscription()
             }
 
-            function end_subscription () {
-                cbus.forget(key, send_to_client)
+            function close_subscription () {
+                client_bus.forget(key, send_update)
                 res.end()
-                cbus.http_unsubscribe(req)
 
-                let peer = req.headers.peer
-                if (cbus.http_callbacks)
-                    delete cbus.http_callbacks[JSON.stringify({peer, key})]
+                delete client_bus.dialogues[req.headers.dialogue]
             }
 
             // If we have a peer id, then register this callback at that peer,
             // so it can avoid getting its own PUT versions echoed back to
             // itself.
-            if (req.headers.peer) {
-                if (!cbus.http_callbacks)
-                    cbus.http_callbacks = {}
-                let peer = req.headers.peer
-                cbus.http_callbacks[JSON.stringify({peer, key})]
-                    = send_to_client
-            }
+            if (req.headers.dialogue)
+                client_bus.dialogues[req.headers.dialogue] = send_update
 
             // And issue the get!
-            cbus.get(key, send_to_client)
+            client_bus.get(key, send_update)
         }
 
+        // Handle a PUT!
         else if (req.method === 'PUT') {
+
+            // Grab the version(s)
+            var t = {
+                version: req.version || client_bus.new_version(),
+                parents: req.parents
+            }
 
             // Maybe the new state is expressed in patches
             if (req.headers.patches || req.headers['content-range']) {
 
                 var patches = req.patches().then(patches => {
-                    console.log("...and we see these patches:", patches)
-                    var cbus = bus.bus_for_http_client(req, res)
-                    var key = req.url.substr(1)
-                    cbus.get_once(key, (obj) => {
-                        cbus.set(key, {patches})
+
+                    // Presume all patch contents are text
+                    t.patches = patches.map(patch => ({
+                        ...patch,
+                        content: patch.content_text
+                    }))
+                    // console.log("...and we see these patches:", patches)
+
+                    // Fetch our current state on the bus
+                    client_bus.get_once(key, (obj) => {
+                        // ...and apply the patches to it
+                        client_bus.set(key, t)
+
+                        // Todo: Make a statebus auto-fetch current state when
+                        // patching so that I don't need to manually fetch it
+                        // before applying a patch.
+
+                        // Todo: only send success once transaction has
+                        // validated.  Handle aborts, too.
                         res.sendStatus(200)
-                        console.log('We just processed a patch!')
+                        // console.log('We just processed a patches!')
                     })
                 })
-            } else {
-                // Otherwise, we assume the body is content-type: json
+            }
+
+            // Otherwise, we have JSON in the body
+            else {
+
+                // Sanity check the body
                 if (typeof req.headers['content-type'] !== 'string'
                     || req.headers['content-type'].toLowerCase() !== 'application/json')
                     console.error('Error: PUT content-type is not application/json')
+
+                // Start downloading it
                 var body = ''
                 req.on('data', chunk => {body += chunk.toString()})
+
+                // When the body is downloaded...
                 req.on('end', () => {
+
+                    // Parse it as JSON
                     try {
-                        var path = req.url.substr(1)
-                        var obj = from_http_body(path, body)
+                        var obj = from_http_body(path, key)
                     } catch (e) {
                         console.error('Error: PUT body was not valid json', e)
                         res.statusCode = 500
@@ -255,73 +283,24 @@ function import_server (bus, make_statebus, options)
                         return
                     }
 
-                    // Make a temporary client bus
-                    var cbus = bus.bus_for_http_client(req, res)
-                    var t = {
-                        version: req.version || cbus.new_version(),
-                        parents: req.parents
-                    }
-
                     // If the peer declares itself, let's remember it so that
                     // we don't send it echoes
-                    if (req.headers.peer) {
-                        let peer = req.headers.peer,
-                            key = obj.key
-                        var cb = cbus.http_callbacks && cbus.http_callbacks[
-                            JSON.stringify({peer, key})
-                        ]
-                        if (cb) cb.has_seen(cbus, key, t.version)
-                    }
+                    var send_func = client_bus.dialogues[req.headers.dialogue]
+                    if (send_func) send_func.has_seen(client_bus, key, t.version)
 
-                    // Now send the version to the bus!
-                    cbus.set(obj, t)
+                    // Now send the update to the bus!
+                    client_bus.set(obj, t)
 
                     res.statusCode = 200
                     res.end()
-                    cbus.http_unsubscribe(req)
+                    client_bus.http_unsubscribe(req)
                 })
             }
         }
-        else
+        else {
+            console.log('IN: nothing on the bus for it! passing along...')
             next()
-    },
-
-    bus_for_http_client: function (req, res) {
-        var bus = this
-        if (!bus.bus_for_http_client.counter) {
-            bus.bus_for_http_client.counter = 0
-            bus.bus_for_http_client.busses = {}
         }
-
-        // If this client has a peer ID, and we've got a bus for that peer,
-        // then re-use it!
-        if (req.peer && bus.bus_for_http_client.busses[req.peer]) {
-            var cbus = bus.bus_for_http_client.busses[req.peer]
-            cbus.client_ip = req.connection.remoteAddress
-            cbus.num_subscriptions++
-            return cbus
-        }
-
-        // Otherwise, create a new bus
-        var cbus = make_statebus()
-        cbus.label = 'client_http' + bus.bus_for_http_client.counter++
-        cbus.master = bus
-        cbus.num_subscriptions = 1
-        cbus.http_unsubscribe = (req) => {
-            cbus.num_subscriptions--
-            if (cbus.num_subscriptions === 0) {
-                // log('Last subscription! Killing client bus!')
-                cbus.delete_bus()
-                delete bus.bus_for_http_client.busses[req.peer]
-            }
-        }
-        bus.bus_for_http_client.busses[req.peer] = cbus
-
-        // And log into it as the client
-        cbus.serves_auth({remoteAddress: req.connection.remoteAddress}, bus)
-        bus.options.client(cbus)
-        cbus.set({key: 'current_user', val: {client: req.peer}})
-        return cbus
     },
 
     make_http_server: function make_http_server (options) {
@@ -417,12 +396,12 @@ function import_server (bus, make_statebus, options)
                             })
 
     },
-    sockjs_server: function sockjs_server(httpserver, client_bus_func) {
-        var master = this
+    sockjs_server: function sockjs_server(httpserver) {
+        var master = bus
         var client_num = 0
         // var client_busses = {}  // XXX work in progress
         var log = master.log
-        if (client_bus_func) {
+        if (master.custom_clients) {
             master.set({key: 'connections', val: {}}) // Clean out old sessions
             var connections = master.get('connections')
         }
@@ -432,7 +411,7 @@ function import_server (bus, make_statebus, options)
             heartbeat_delay: 6000 * 1000
         })
         s.on('connection', function(conn) {
-            if (client_bus_func) {
+            if (master.custom_clients) {
                 // To do for pooling client busses:
                 //  - What do I do with connections?  Do they pool at all?
                 //  - Before creating a new bus here, check to see if there's
@@ -441,15 +420,18 @@ function import_server (bus, make_statebus, options)
                 //  - When disconnecting, decrement the number, and if it gets
                 //    to zero, delete the client bus.
 
-                connections.val[conn.id] = {client: conn.id, // client is deprecated
-                                            id: conn.id}
-                master.set(connections)
+                // connections.val[conn.id] = {id: conn.id}
+                // master.set(connections)
+
+                var client_id = conn.headers.peer ||
+                    require('cookie').parse(conn.headers.cookie || '').peer
 
                 var client = make_statebus()
                 client.label = 'client' + client_num++
                 master.label = master.label || 'master'
+                client.client_ip = conn.remoteAddress
                 client.master = master
-                client_bus_func(client, conn)
+                master.custom_clients(client, client_id)
             } else
                 var client = master
 
@@ -519,16 +501,22 @@ function import_server (bus, make_statebus, options)
                     break
                 case 'set':
                     message.version = message.version || client.new_version()
-                    if (message.patches) {
-                        var o = bus.cache[message.set] || {key: message.set}
-                        try {
-                            message.set = bus.apply_patch(o.val, message.patches[0])
-                        } catch (e) {
-                            console.error('Received bad sockjs message from '
-                                          + conn.remoteAddress +': ', message, e)
-                            return
-                        }
-                    }
+                    // if (message.patches) {
+                    //     var o = client.cache[message.set] || {key: message.set}
+                    //     try {
+                    //         console.log('Applying patch', {
+                    //             key: message.set,
+                    //             patches: message.patches,
+                    //             to: o,
+                    //             bus: bus.label
+                    //         })
+                    //         message.set = client.apply_patch(o.val, message.patches[0])
+                    //     } catch (e) {
+                    //         console.error('Received bad sockjs message from '
+                    //                       + conn.remoteAddress +': ', message, e)
+                    //         return
+                    //     }
+                    // }
                     client.set(message.set,
                                 {version: message.version,
                                  parents: message.parents,
@@ -553,67 +541,68 @@ function import_server (bus, make_statebus, options)
                 log('sockjs_s: disconnected from', conn.remoteAddress, conn.id, client.id)
                 for (var key in our_gets_in)
                     client.forget(key, sockjs_pubber)
-                if (client_bus_func) {
-                    delete connections.val[conn.id]; master.set(connections)
-                    master.delete('connection/' + conn.id)
+                if (master.custom_clients) {
+                    // delete connections.val[conn.id]; master.set(connections)
+                    // master.delete('connection/' + conn.id)
                     client.delete_bus()
                 }
             })
 
-            // Define the /connection* state!
-            if (client_bus_func && !master.options.__secure) {
+            // // Define the /connection* state!
+            // if (master.custom_clients && !master.options.__secure) {
 
-                // A connection
-                client('connection/*').getter = function (key, star) {
-                    var result = bus.clone(master.get(key))
-                    if (master.options.connections.include_users && result.user)
-                        result.user = client.get(result.user.key)
-                    result.id     = star
-                    result.client = star  // Deprecated.  Delete this line in v7.
-                    return result
-                }
-                client('connection/*').setter = function (o, star, t) {
-                    // Check permissions before editing
-                    if (star !== conn.id && !master.options.connections.edit_others) {
-                        t.abort()
-                        return
-                    }
-                    o.id     = star
-                    o.client = star      // Deprecated.  Delete this line in v7.
-                    master.set(client.clone(o))
-                }
+            //     // A connection
+            //     client('connection/*').getter = function (key, star) {
+            //         var result = bus.clone(master.get(key))
+            //         if (master.options.connections.include_users && result.user)
+            //             result.user = client.get(result.user.key)
+            //         result.id     = star
+            //         result.client = star  // Deprecated.  Delete this line in v7.
+            //         return result
+            //     }
+            //     client('connection/*').setter = function (o, star, t) {
+            //         // Check permissions before editing
+            //         if (star !== conn.id && !master.options.connections.edit_others) {
+            //             t.abort()
+            //             return
+            //         }
+            //         o.id     = star
+            //         o.client = star      // Deprecated.  Delete this line in v7.
+            //         master.set(client.clone(o))
+            //     }
 
-                // Your connection
-                client('connection').getter = function () {
-                    // subscribe to changes in authentication
-                    client.get('current_user')
+            //     // Your connection
+            //     client('connection').getter = function () {
+            //         // subscribe to changes in authentication
+            //         client.get('current_user')
 
-                    var result = client.clone(client.get('connection/' + conn.id))
-                    delete result.key
-                    return result
-                }
-                client('connection').setter = function (o) {
-                    o = client.clone(o)
-                    o.key = 'connection/' + conn.id
-                    client.set(o)
-                }
+            //         var result = client.clone(client.get('connection/' + conn.id))
+            //         delete result.key
+            //         return result
+            //     }
+            //     client('connection').setter = function (o) {
+            //         o = client.clone(o)
+            //         o.key = 'connection/' + conn.id
+            //         client.set(o)
+            //     }
 
-                // All connections
-                client('connections').setter = function noop (t) {t.abort()}
-                client('connections').getter = function () {
-                    var result = []
-                    var conns = master.get('connections').val
-                    for (var connid in conns)
-                        if (connid !== 'key')
-                            result.push(client.get('connection/' + connid))
+            //     // All connections
+            //     client('connections').setter = function noop (t) {t.abort()}
+            //     client('connections').getter = function () {
+            //         var result = []
+            //         var conns = master.get('connections').val
+            //         for (var connid in conns)
+            //             if (connid !== 'key')
+            //                 result.push(client.get('connection/' + connid))
                     
-                    return {val: result}
-                }
-            }
+            //         return {val: result}
+            //     }
+            // }
         })
 
         // console.log('websocket listening on', '/' + bus.options.websocket_path)
-        s.installHandlers(httpserver, {prefix:'/' + bus.options.websocket_path})
+        s.installHandlers(httpserver || bus.http,
+                          {prefix:'/' + bus.options.websocket_path})
     },
 
     make_websocket: function make_websocket (url) {
@@ -1215,7 +1204,6 @@ function import_server (bus, make_statebus, options)
     },
 
     smtp (opts) {
-        var bus = this
         // Listen for SMTP messages on port 25
         if (opts.domain) {
             var mailin = require('mailin')
@@ -1699,7 +1687,7 @@ function import_server (bus, make_statebus, options)
         }
     },
 
-    serves_auth: function serves_auth (conn, master) {
+    serves_auth: function serves_auth (master) {
         // Right now, we only support accounts at '@username', but in general
         // we could allow the prefix to be configurable.  We just have to go
         // through this function and make all the regular expressions (like
@@ -1743,6 +1731,7 @@ function import_server (bus, make_statebus, options)
                 var users = master.get('users')
                 users.val = users.val || []
                 for (var i=0; i<users.val.length; i++) {
+                    if (!users.val[i]) console.log('Undefined for', {users, i})
                     var u = master.get(users.val[i].link)
                     if (!(u.val.login || u.val.name)) {
                         console.error('upass: this user has bogus name/login', u.key, u.val.name, u.val.login)
@@ -1758,6 +1747,7 @@ function import_server (bus, make_statebus, options)
                 }
                 return result
             }
+
             master.auth_initialized = true
             master.get('users/passwords')
 
@@ -1864,10 +1854,10 @@ function import_server (bus, make_statebus, options)
 
         // Current User
         client('current_user').getter = function (k) {
-            if (!conn.client)
+            if (!client.client_id)
                 return {val: {error: 'no client'}}
 
-            var u = (master.get('logged_in_clients').val || {})[conn.client]
+            var u = (master.get('logged_in_clients').val || {})[client.client_id]
             var result = {val: {user: u || null, logged_in: !!u}}
             return result
         }
@@ -1888,14 +1878,12 @@ function import_server (bus, make_statebus, options)
             }
 
             client.log('* saving: current_user!')
-            if (val.client && !conn.client) {
-                // Set the client
-                //
-                //   Note: Should this code be moved upstream, when creating a
-                //         client bus?
-                conn.client = val.client
+
+            if (val.client && !client.client_id) {
+                // Note: HTTP clients already set client.client_id when
+                // creating the client bus, so this code should only run for
+                // websocket clients..
                 client.client_id = val.client
-                client.client_ip = conn.remoteAddress
 
                 // if (conn.id) {
                 //     var connections = master.get('connections')
@@ -1933,6 +1921,7 @@ function import_server (bus, make_statebus, options)
 
                         client.log('auth said:', user_key)
                         if (user_key) {
+                            client.log('Success!')
                             // Success!
                             // Associate this user with this session
                             // user.log('Logging the user in!', u)
@@ -1941,7 +1930,7 @@ function import_server (bus, make_statebus, options)
                             // var connections = master.get('connections')
 
                             clients.val = clients.val || {}
-                            clients.val[conn.client]  = {link: user_key}
+                            clients.val[client.client_id]  = {link: user_key}
                             // connections.val[conn.id].user = {link: user_key}
 
                             master.set(clients)
@@ -1961,12 +1950,13 @@ function import_server (bus, make_statebus, options)
                 }
 
                 else if (val.logout) {
-                    client.log('current_user: logging out')
+                    client.log('current_user: logging out of client ',
+                               client.client_id)
                     var clients = master.get('logged_in_clients')
                     // var connections = master.get('connections')
 
                     clients.val = clients.val || {}
-                    delete clients.val[conn.client]
+                    delete clients.val[client.client_id]
                     // connections.val[conn.id].user = null
 
                     master.set(clients)
@@ -2450,8 +2440,8 @@ function import_server (bus, make_statebus, options)
         path = path || 'client.js'
         bus.http.get('/' + path, (req, res) => {
             var files =
-                ['extras/coffee.js', 'extras/sockjs.js',
-                 'statebus.js', 'client.js'].map((f) => fs.readFileSync('node_modules/statebus/' + f))
+                ['extras/coffee.js', 'extras/sockjs.js', 'extras/react12.min.js',
+                 'statebus.js', 'client-library.js'].map((f) => fs.readFileSync('node_modules/statebus/' + f))
             files.unshift(fs.readFileSync(
                 'node_modules/braid-http/braid-http-client.js'
             ))

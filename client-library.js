@@ -40,10 +40,11 @@
         return new WebSocket(url + '/' + websocket_prefix + '/websocket')
         // return new SockJS(url + '/' + websocket_prefix)
     }
+    bus.make_websocket = make_websocket
     bus.client_creds = function client_creds () {
         // This function is only used for websocket connections.
         // http connections set the cookie on the server.
-        var me = JSON.parse(localStorage['ls/me'])
+        var me = JSON.parse(localStorage['ls/me'] || '{}')
         bus.log('connect: me is', me)
         if (!me.client) {
             // Create a client id if we have none yet.
@@ -231,11 +232,14 @@
                             // As a snapshot body
                             t.return({
                                 key: key,
-                                val: add_prefixes(JSON.parse(update.body))
+                                val: add_prefixes(JSON.parse(update.body_text))
                             })
                         else if (update.patches)
                             // As a patch
-                            bus.set.fire(key, {patches: update.patches})
+                            bus.set.fire(key, {patches: update.patches.map(patch => ({
+                                ...patch,
+                                content: patch.content_text
+                            }))})
                     },
                     reconnect
                 )).catch(reconnect)

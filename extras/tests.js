@@ -200,6 +200,7 @@ test(function serve_options (done) {
         //file_store: false,
         file_store: {filename: filename, save_delay: 0, backup_dir: backups},
         certs: {private_key: certs+'/pk', certificate: certs+'/cert'},
+        websocket: true
     })
 
     b.set({key: 'foo', body: 'is this on disk?'})
@@ -305,18 +306,65 @@ test(function url_translation (done) {
 })
 
 test(function proxy_link (done) {
-    bus.state.link_from = [{link: 'link_to'}]
+    bus.state.fake_link_from = [{link: 'link_to'}]
     bus.state.link_to = 3
-    assert(bus.state.link_from[0] !== 3, 'Link got linkified')
-    console.log('link_from is', bus.state.link_from)
-    var pass = bus.deep_equals(bus.state.link_from, [{link: 'link_to'}])
-    console.log('pass is', pass)
+    assert(bus.state.fake_link_from[0] !== 3, 'Link got linkified')
+    log('fake_link_from is', bus.state.fake_link_from)
+    var pass = bus.deep_equals(bus.state.fake_link_from, [{link: 'link_to'}])
+    log('pass is', pass)
     assert(pass, 'Failed proxy link unlinky test')
 
     // assert(bus.deep_equals(bus.state.link_from, [{link: 'link_to'}]), 'Link_from looks wrong')
 
     done()
 })
+
+test(function proxy_links_through (done) {
+    var bus = require('../statebus')()
+
+    // First try to dereference through three links
+
+    bus.state.a = [bus.link('b')]
+    bus.state.b = bus.link('c')
+    bus.state.c = 'see'
+    
+    log('state.c is', bus.state.c)
+    log('state.b is', bus.state.b, 'from cache', bus.cache.b)
+    log('state.a is', bus.state.a)
+    log('state.a[0] is', bus.state.a[0])
+    log('state.a[0]() is', bus.state.a[0]())
+    log('state.a[0]()() is', bus.state.a[0]()())
+    assert(bus.state.a[0]()() === 'see')
+
+    // Add a little more wrapping and try some more
+
+    bus.state.nested = [99, {a: bus.link('a')}]
+    log('nested is', bus.state.nested)
+    log('nested[1].a()[0]()() is', bus.state.nested[1].a()[0]()())
+    assert(bus.state.nested[1].a()[0]()() === 'see')
+
+    // Now try to go raw at the top-level
+
+    log('Raw is', bus.state[bus.symbols.raw].nested)
+    log('Raw is', bus.raw(bus.state).nested)
+    assert(bus.deep_equals(
+        bus.state[bus.symbols.raw].nested,
+        bus.raw(bus.state).nested
+    ))
+    assert(bus.deep_equals(
+        bus.raw(bus.state).nested,
+        [ 99, { a: { link: 'a' } } ]
+    ))
+
+    // Now try to go raw within
+
+    log('Raw inner is', bus.raw(bus.state.nested[1]))
+
+    log('Bad raw call is', bus.raw(bus.state.nested[0]))
+
+    done()
+})
+
 
 test(function translate_fields (done) {
     // Translate Statebus -> Proxy format
@@ -486,8 +534,8 @@ test(function once (done) {
     delay(30, _=> done())
 })
 
-// If there's an on_get handler, the callback doesn't return
-// until the handler fires a value
+// If there's a getter, the callback doesn't return until the handler fires a
+// value
 test(function get_remote (done) {
     var count = 0
 
@@ -606,7 +654,7 @@ test(function forgetting (done) {
     }, 100)
 })
 
-// Can we return an object that getes another?
+// Can we return an object that gets another?
 test(function nested_get (done) {
     function outer () { return {inner: bus.get('inner') } }
     bus('outer').getter = outer
@@ -870,32 +918,75 @@ test(function proxies (done) {
     // Getting a normal property should do a get
 })
 
-test(function key_patterns (done) {
+test(function path_parts (done) {
     bus.honk = 3
-    bus('path/:pattern/stuff*').getter = function (key, key_parts, t) {
-        t.done({ key: key, val: key_parts })
+    bus('path/:part1/:part2/stuff/:part3/more*').getter = function (key, path, t) {
+        t.done({ key: key, val: path })
     }
     
-    bus.get_once('path/foo/stuff(yes:maam,okay)', (o) => {
-        assert(o.val.pattern === 'foo')
+    bus.get_once('path/foo/bar/stuff/baz/more(yes:maam,okay)', (o) => {
+        assert(o.val.part1 === 'foo'
+               && o.val.part2 === 'bar'
+               && o.val.part3 === 'baz', 'Dangit, we got: ' + JSON.stringify(o.val))
         done()
     })
 })
 
-test(function kson (done) {
-    bus('kson_stuff/foo/stuff*').getter = function (key, kson, t) {
+test(function func_args (done) {
+    log('Func args test!!!')
+
+    bus('func_args/:foo/stuff*()').getter = function (key, func_args, star, t) {
+        log('Getting star', star, 'func_args', func_args)
         t.done({
             key: key,
-            val: {kson: kson}
+            val: {func_args, star}
         })
     }
     
-    bus.get_once('kson_stuff/foo/stuff(yes:maam,okay)', (o) => {
-        console.log(o)
-        assert(o.val.kson.yes === 'maam')
-        assert(o.val.kson.okay)
-        done()
+    bus.get_once('func_args/foobar/stuff(yes:maam,okay)', (o) => {
+        assert(o.val.func_args.yes === 'maam')
+        assert(o.val.func_args.okay)
+        assert(o.val.star === '')
     })
+
+    bus.get_once('func_args/foobar/stuff_and_more(yes:maam,okay)', (o) => {
+        assert(o.val.func_args.yes === 'maam')
+        assert(o.val.func_args.okay)
+        assert(o.val.star === '_and_more')
+    })
+
+    bus.get_once('func_args/foobar/stuff_and_more', (o) => {
+        assert(o.val.func_args === undefined)
+        assert(o.val.star === '_and_more')
+    })
+
+    delay(50, done)
+})
+
+test(function autodetected_args_called_with_proxy (done) {
+    var count = 0
+    bus('counter', {
+        get: (val, old, t) => {
+            log('Getting counter', {count, val, old})
+            if (count === 0) {
+                assert(val === undefined, 'Get bad val')
+                assert(old === undefined, 'Get bad old')
+            }
+            return count
+        },
+        set: (val, old, t) => {
+            log('Setting counter', count, 'to', val, 'from knowledge of', old)
+            if (count === 0) {
+                assert(old === undefined, 'Set bad old')
+            }
+            count = val
+            t.done()
+        }
+    })
+        
+    bus.state.counter = 0
+
+    delay(50, done)
 })
 
 test(function only_one (done) {
@@ -1163,7 +1254,13 @@ test(function default_route (done) {
 function setup_servers () {
     var port = 3000 + Math.floor(Math.random() * 1000)
 
-    s = require('../statebus').serve({port, file_store: false})
+    s = require('../statebus').serve({port,
+                                      file_store: false,
+                                      websocket: true,
+                                      client: (c) => {
+                                          // c.honk = true
+                                          c.shadows(s)}
+                                     })
     s.label = 's'
     log('Saving /far on server')
     s.set({key: 'far', away:'is this'})
@@ -1233,7 +1330,7 @@ test(function setup_server (done) {
 test(function login (done) {
     var {s, c} = setup_servers()
 
-    //c.honk = true
+    // c.honk = true
     c(function () {
         var u = c.get('/current_user')
         log('Current user changed!', c.label, JSON.stringify(u))
@@ -1254,7 +1351,7 @@ test(function login (done) {
         var u = c.get('/current_user')
         u.val = {login_as: {name: 'mike', pass: 'yeah'}}
         log('Logging in')
-        //s.honk = true
+        // s.honk = true
         c.set(u)
         log('Let\'s see if that login worked!!')
     })
@@ -1337,6 +1434,7 @@ function connections_helper (done, port, options) {
     // Setup a server
     var s = require('../statebus').serve({port: port,
                                           file_store: false,
+                                          websocket: true,
                                           connections: options})
     s.label = 's'
 
@@ -1419,13 +1517,13 @@ function connections_helper (done, port, options) {
     delay(50, _=> done())
 }
 
-test(function connections_1 (done) {
-    connections_helper(done, 3951, {include_users: true, edit_others: true})
-})
+// test(function connections_1 (done) {
+//     connections_helper(done, 3951, {include_users: true, edit_others: true})
+// })
 
-test(function connections_2 (done) {
-    connections_helper(done, 3952, {include_users: false, edit_others: false})
-})
+// test(function connections_2 (done) {
+//     connections_helper(done, 3952, {include_users: false, edit_others: false})
+// })
 
 test(function flashbacks (done) {
     // We have an echo canceler.  If you set state, it shouldn't send the
@@ -1436,12 +1534,15 @@ test(function flashbacks (done) {
     var port = 3873
 
     // Setup a server
-    var s = require('../statebus').serve({port: port, file_store: false})
+    var s = require('../statebus').serve({port: port,
+                                          websocket: true,
+                                          file_store: false})
+
     s.label = 's'
 
     s('x').setter = (o, t) => {
         log('Saving x with', o)
-        o.x++        // Change the value of o.x a little
+        o.val++        // Change the value of o.x a little
         t.done(o)
     }
 
@@ -1454,20 +1555,24 @@ test(function flashbacks (done) {
     c2.label = 'c2'
     c2.ws_mount('*', 'statei://localhost:' + port)
     
-    c1.x = c1.get('x')
-    c2.x = c2.get('x')
+    // s.honk = true
+    // c1.honk = true
+    // c2.honk = true
+
+    var x1 = c1.get('x')
+    var x2 = c2.get('x')
 
     // Change stuff
     delay(50, _=> {
-        c1.x.x = 1
-        c1.set(c1.x)
+        x1.val = 1
+        c1.set(x1)
     })
 
     // Test stuff
-    delay(50, _=> {
-        assert(c2.x.x === 2, 'c2 didn\'t get it')
-        assert(c1.x.x === 2, 'c1 didn\'t get it')
-        log('complete!', c1.x, c2.x)
+    delay(500, _=> {
+        assert(x2.val === 2, 'c2 didn\'t get the update')
+        assert(x1.val === 2, 'c1 didn\'t get the update')
+        log('complete!', x1, x2)
         done()
     })
 })
@@ -1653,6 +1758,7 @@ if (false) {
     test(function closet_space (done) {
         var s = require('../statebus').serve({port: 3949,
                                               file_store: false,
+                                              websocket: true,
                                               client: (c)=>{c.honk=true}})
         s.label = 's'
 

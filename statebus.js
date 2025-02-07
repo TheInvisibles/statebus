@@ -92,6 +92,10 @@
     var gets_in = new One_To_Many()  // Maps `key' to `pub_funcs' subscribed to our key
 
     var currently_saving
+
+    // Two forms:
+    //  - set(obj, t)  with snapshot
+    //  - set(key, t)  with patches
     function set (obj, t) {
         // First let's handle patches.  We receive them as:
         //
@@ -105,11 +109,11 @@
             var key = obj,
                 obj = bus.cache[key]
 
-            console.log('set: applying the patches!', {
-                key: key,
-                obj: obj,
-                patches: t.patches[0]
-            })
+            // console.log('set: applying the patches!', {
+            //     key: key,
+            //     obj: obj,
+            //     patches: t.patches[0]
+            // })
             obj.val = apply_patch(obj.val, t.patches[0])
         }
 
@@ -290,8 +294,17 @@
             return f
         }
 
-        // Called with a key to produce a subspace
-        else return subspace(arg1, arg2)
+        // Called with a key to produce a subspace.
+        // We currently have two forms:
+        //
+        //    old_subspace('foo').to_get = ... // etc.
+        //
+        //    new_subspace('foo', {get: ...})  // etc
+        //
+        else if (arg2 === undefined)
+            return old_subspace(arg1)
+        else
+            return new_subspace(arg1, arg2)
     }
     var id = 'bus-' + Math.random().toString(36).substring(7)
     bus.toString = function () { return bus.label || 'bus'+this_bus_num || id }
@@ -393,6 +406,7 @@
 
             return obj
         }
+
         deep_map(object, update_object)
         return modified_keys.values()
     }
@@ -449,6 +463,12 @@
                 // delete backup_cache[key]
                 delete gets_out[key]
                 delete to_be_forgotten[key]
+
+                if (bus.auto_delete && gets_in.empty()) {
+                    bus.auto_delete()
+                    bus.delete_bus()
+                }
+
             }, 200)
         }
     }
@@ -622,50 +642,49 @@
 
     // ****************
     // Connections
-    function subspace (key, params) {
+    function old_subspace (key, params) {
         var methods = {getter:null, setter:null, on_set:null, on_set_sync:null,
                        on_delete:null, deleter:null, forgetter:null}
 
-        if (params) {
-            for (var method in params) {
-                var func = params[method]
-                var param_names = {get:'getter', set:'setter',
-                                   delete: 'deleter', forget: 'forgetter',
-                                   on_set:'on_set', on_set_sync:'on_set_sync'}
+        var result = {}
+        for (var method in methods)
+            (function (method) {
+                Object.defineProperty(result, method, {
+                    set: function (func) {
+                        autodetect_args(func)
+                        func.defined = func.defined || []
+                        func.defined.push(
+                            {as:'handler', bus:bus, method:method, key:key})
+                        bind(key, method, func, 'pattern')
+                    },
+                    get: function () {
+                        var result = bindings(key, method)
+                        for (var i=0; i<result.length; i++) result[i] = result[i].func
+                        result.delete = function (func) { unbind (key, method, func, 'pattern') }
+                        return result
+                    }
+                })
+            })(method)
+        return result
+    }
 
-                // Map it from the API's name to our internal name
-                console.assert(param_names[method],
-                               'Method "' + method + '" is invalid')
-                method = param_names[method]
+    function new_subspace (key, params) {
+        for (var method in params) {
+            var func = params[method]
+            var param_names = {get:'getter', set:'setter',
+                               delete: 'deleter', forget: 'forgetter',
+                               on_set:'on_set', on_set_sync:'on_set_sync'}
 
-                autodetect_args(func)
-                func.defined = func.defined || []
-                func.defined.push({bus, method, key, as: 'handler'})
-                func.use_linked_json = true
-                bind(key, method, func, 'pattern')
-            }
-        }
-        else {
-            var result = {}
-            for (var method in methods)
-                (function (method) {
-                    Object.defineProperty(result, method, {
-                        set: function (func) {
-                            autodetect_args(func)
-                            func.defined = func.defined || []
-                            func.defined.push(
-                                {as:'handler', bus:bus, method:method, key:key})
-                            bind(key, method, func, 'pattern')
-                        },
-                        get: function () {
-                            var result = bindings(key, method)
-                            for (var i=0; i<result.length; i++) result[i] = result[i].func
-                            result.delete = function (func) { unbind (key, method, func, 'pattern') }
-                            return result
-                        }
-                    })
-                })(method)
-            return result
+            // Map it from the API's name to our internal name
+            console.assert(param_names[method],
+                           'Method "' + method + '" is invalid')
+            method = param_names[method]
+
+            autodetect_args(func)
+            func.call_with_proxies = true
+            func.defined = func.defined || []
+            func.defined.push({bus, method, key, as: 'handler'})
+            bind(key, method, func, 'pattern')
         }
     }
 
@@ -684,8 +703,8 @@
             case 'key':
             case 'k':
                 handler.args['key'] = i; break
-            case 'key_parts':
-                handler.args['key_parts'] = i; break
+            case 'path':
+                handler.args['path'] = i; break
             case 'json':
             case 'vars':
                 handler.args['vars'] = i; break
@@ -704,8 +723,8 @@
                 handler.args['obj'] = i; break
             case 'old':
                 handler.args['old'] = i; break
-            case 'kson':
-                handler.args['kson'] = i; break
+            case 'func_args':
+                handler.args['func_args'] = i; break
             }
     }
 
@@ -720,20 +739,45 @@
 
         function pattern_matcher (pattern) {
             var param_names = []
-            var regex = new RegExp('^' + pattern.replace(/(?<=^|\/):[^/()]+|\*/g, match => {
-                // Replace * with .*
-                if (match === '*') return '.*'
 
+            // console.log('Creating pattern for', pattern)
+
+            // First, convert the pattern into a regexp.
+
+            // 1. Handle :foo by swapping it with '([^/*()]+)'
+            pattern = pattern.replace(/(?<=^|\/):[^/*()]+/g, match => {
                 // Replace :foo with ([^/]+), and remember the "foo" name
                 param_names.push(match.slice(1))
-                return '([^/]+)'
-            }) + '$')
+                return '([^/*()]+)'
+            })
+
+            // Now look for * and () at the end and replace with regexps
+            if (pattern.slice(-3) === '*()')
+                pattern = pattern.slice(0, -3) + '(?<star>[^()]*)(?<fstring>\\(.*\\))?'
+            else if (pattern.slice(-1) === '*')
+                pattern = pattern.slice(0, -1) + '(?<star>.*)'
+            else if (pattern.slice(-2) === '()')
+                pattern = pattern.slice(0, -2) + '(?<fstring>\\(.*\\))?'
+
+            // Construct the regexp
+            var regex = new RegExp('^' + pattern + '$')
             
+            // console.log('Pattern became      ', regex)
+
+            // Return a matcher function that runs it
             return path => {
                 var match = path.match(regex)
                 if (!match) return null
                 var params = {}
-                match.slice(1).forEach((val, i) => params[param_names[i]] = val)
+                params.func_args = match.groups.fstring
+                params.star = match.groups.star
+
+                // Add to params.path all the path parts
+                params.path = {}
+                match.slice(1, param_names.length + 1).forEach((val, i) =>
+                    params.path[param_names[i]] = val
+                )
+
                 return params
             }
         }
@@ -797,14 +841,16 @@
         for (var i=0; i < pattern_handlers.length; i++) {
             handler = pattern_handlers[i]
             var matches = handler.matcher(key)
+            // console.log('The matching of', pattern_handlers[i], 'to', key, 'is', matches)
+
             if (matches                                // If the pattern matches
                 && method === handler.method           // And it has the right method
                 && !seen[funk_key(handler.funk)]) {
 
                 handler.funk.statebus_binding = {
-                    key: handler.pattern,
+                    key:    handler.pattern,
                     method: method,
-                    params: matches
+                    args:   matches
                 }
                 result.push({method, key:handler.pattern, func:handler.funk})
                 seen[funk_key(handler.funk)] = true
@@ -815,6 +861,11 @@
     }
 
     function run_handler(funck, method, arg, options) {
+        // If method == "set",    then arg is an object {key: "foobar", ...}
+        // If method == "get",    then arg is a key     "foobar"
+        // If method == "forget", then arg is a key     "foobar"
+        // If method == "delete", then arg is a key     "foobar"
+
         options = options || {}
         var t = options.t,
             just_make_it = options.dont_run,
@@ -875,15 +926,30 @@
         // Fresh get/set/forget/delete handlers will just be regular
         // functions.  We'll store their arg and transaction and let them
         // re-run until they are done re-running.
-        function key_arg () { return ((typeof arg.key) == 'string') ? arg.key : arg }
-        function rest_arg () { return (key_arg()).substr(binding.length-1) }
+        function key_arg () { return ((typeof arg.key) === 'string') ? arg.key : arg }
+        function rest_arg () {
+            return func.statebus_binding && func.statebus_binding.args.star
+            // (key_arg()).substr(binding.length-1)
+        }
         function val_arg () {
             console.assert(method === 'setter' || method === 'on_set' || method === 'on_set_sync',
                            'Bad method for val_arg()')
-            // Is there a time I am supposed to return bus.cache[arg]?  It used to say:
-            // arg.key ? arg : bus.cache[arg]
 
-            return arg.key ? (func.use_linked_json ? arg.val : arg) : undefined
+            var value = (typeof arg === 'string'
+                         // If arg is a key, then semantics of val is "the
+                         // current value in the cache".  I'm doing this
+                         // because it *might* be useful in a getter ... but
+                         // let's see if we actually have good examples of use
+                         // for this feature.
+                         ? bus.cache[arg]
+                         // Otherwise, arg must be the actual object
+                         : arg)
+
+            // The Proxy API unwraps the .val for us
+            if (func.call_with_proxies)
+                value = value.val
+
+            return value
         }
         function vars_arg () {
             var r = rest_arg()
@@ -893,19 +959,19 @@
                 return 'Bad JSON "' + r + '" for key ' + key_arg()
             }
         }
-        // Parse out query params for URLs in the style /foo/bar(param1,param2:val2).
-        // We're currently calling that (param1,param2:val2) part "kson", and presuming
-        // that it exists in the * part of the pattern like in /foo/bar*.
-        function kson_args () {
+        // Parse out function params for URLs in the style /foo/bar(param1,param2:val2).
+        // We're currently calling that (param1,param2:val2) part "function params", and presuming
+        // that it exists in the () part of the pattern like in /foo/bar*().
+        function func_args () {
             // This code is copied from Raphael Walker's parser.coffee
             function split_once (str, char) {
                 var i = str.indexOf(char)
                 return i === -1 ? [str, ""] : [str.slice(0, i), str.slice(i + 1)]
             }
 
-            // KSON = Kinda Simple Object Notation
-            // but it rhymes with JSON
-            function parse_kson (str) {
+            // Function Strings -- an alternative to query strings
+            //
+            function parse_function_string (str) {
                 // Coffeescript doesn't have object comprehensions :(
                 var ret = {}
 
@@ -916,7 +982,7 @@
                     // Split by commas. TODO: Allow spaces after commas?
                     .split(",")
                     // Delete empty parts (this ensures that empty strings
-                    // will properly result in empty KSON, and allows trailing
+                    // will properly result in empty func_string, and allows trailing
                     // commas)
                     .filter(part => part.length)
                     .forEach(part => {
@@ -925,13 +991,17 @@
                         var [k, v] = split_once(part, ":")
                         
                         if (v.length === 0) ret[k] = true
-                        // If the value is itself a KSON object, parse it recursively
-                        else if (v.startsWith("(")) ret[k] = parse_kson(v)
+                        // If the value is itself a func_string params object, parse it recursively
+                        else if (v.startsWith("(")) ret[k] = parse_function_string(v)
                         else ret[k] = v
                     })
                 return ret
             }
-            return parse_kson(rest_arg())
+            // console.log('Getting func_args from', func.statebus_binding.args)
+            if (!(func.statebus_binding.args
+                  && func.statebus_binding.args.func_args))
+                return undefined
+            return parse_function_string(func.statebus_binding.args.func_args)
         }
         var f = reactive(function () {
             // Initialize transaction
@@ -951,8 +1021,8 @@
             if (method !== 'forgetter')
                 t.done = function (o) {
                     var key = method === 'setter' ? arg.key : arg
-                    if (func.use_linked_json)
-                        o = {key, val: o}
+                    if (func.call_with_proxies)
+                        o = {key, val: raw(o)}
                     bus.log('We are DONE()ing', method, key, o||arg)
 
                     // We use a simple (and crappy?) heuristic to know if the
@@ -1007,8 +1077,10 @@
                 switch (k) {
                 case 'key':
                     args[func.args[k]] = key_arg(); break
-                case 'key_parts':
-                    args[func.args[k]] = func.statebus_binding && func.statebus_binding.params
+                case 'path':
+                    args[func.args[k]] = (func.statebus_binding
+                                          && func.statebus_binding.args
+                                          && func.statebus_binding.args.path)
                     break
                 case 'rest':
                     args[func.args[k]] = rest_arg(); break
@@ -1022,9 +1094,11 @@
                 case 'old':
                     var key = key_arg()
                     args[func.args[k]] = bus.cache[key] || (bus.cache[key] = {key:key})
+                    if (func.call_with_proxies)
+                        args[func.args[k]] = args[func.args[k]].val
                     break
-                case 'kson':
-                    args[func.args[k]] = kson_args(rest_arg()); break
+                case 'func_args':
+                    args[func.args[k]] = func_args(); break
                 }
             }
 
@@ -1045,9 +1119,9 @@
             if (result === 'abort') t.abort()
 
             // For get
-            if (func.use_linked_json) {
+            if (func.call_with_proxies) {
                 if (method === 'getter' && result !== undefined && !f.loading()) {
-                    var obj = {key: arg, val: result}
+                    var obj = {key: arg, val: raw(result)}
                     var new_t = clone(t || {})
                     new_t.getter = true
                     set.fire(obj, new_t)
@@ -1378,9 +1452,8 @@
 
     var symbols = {
         is_proxy: Symbol('is_proxy'),
-        // is_link: Symbol('is_link'),
-        // get_json: Symbol('get_json'),
-        // get_base: Symbol('get_base')
+        raw: Symbol('raw'),
+        link: Symbol('link')
     }
     function make_proxy () {
         // var custom_inspect_symbol = nodejs && require('util').inspect.custom,
@@ -1401,8 +1474,9 @@
 
             // We recursively descend through {key: ...} links
             if (typeof o === 'object' && 'link' in o) {
-                var new_base = bus.get(o.link)
-                return item_proxy(new_base, '', new_base.val)
+                // var new_base = bus.get(o.link)
+                // return item_proxy(new_base, '', new_base.val)
+                return link_proxy(o.link)
             }
 
 
@@ -1422,18 +1496,20 @@
                     //     return custom_inspect
                     if (k === symbols.is_proxy)
                         return true
+                    if (k === symbols.raw)
+                        return o
                     if (typeof k === 'symbol')
                         return undefined
 
                     // Compute the new path
                     var new_path = path + '[' + JSON.stringify(k) + ']'
-                    return item_proxy(base, new_path, o[escape_field_to_bus(escape_field_to_nelson(k))])
+                    return item_proxy(base, new_path, o[escape_field_json_to_bus(k)])
                 },
                 set: function (o, k, v) {
-                    var value = translate_fields(v, field => escape_field_to_bus(escape_field_to_nelson(field)))
-                    o[escape_field_to_bus(escape_field_to_nelson(k))] = value
+                    var value = escape_json_to_bus(v)
+                    o[escape_field_json_to_bus(k)] = value
                     var new_path = path + '[' + JSON.stringify(k) + ']'
-                    bus.set(
+                    bus.set.sync(
                         base,
                         // Forward the patches too
                         {patches: [{unit: 'json',
@@ -1445,17 +1521,17 @@
                 has: function (o, k) {
                     // if (custom_inspect && k === custom_inspect)
                     //     return true
-                    return o.hasOwnProperty(escape_field_to_bus(escape_field_to_nelson(k)))
+                    return o.hasOwnProperty(escape_field_json_to_bus(k))
                 },
                 ownKeys: function () {
-                    return Object.keys(o).map(unescape_field_from_nelson).map(unescape_field_from_bus)
+                    return Object.keys(o).map(unescape_field_bus_to_json)
                 },
                 getOwnPropertyDescriptor: function (target, key) {
                     return { enumerable: true, configurable: true, value: this.get(o, key) }
                 },
                 deleteProperty: function del (o, k) {
                     var new_path = path + '[' + JSON.stringify(k) + ']'
-                    delete o[escape_field_to_bus(escape_field_to_nelson(k))]
+                    delete o[escape_field_json_to_bus(k)]
                     bus.set(
                         base,
                         // Forward the patches too
@@ -1472,15 +1548,84 @@
                 // }
             })}
 
+        function link_proxy (url) {
+            return new Proxy(function follow_link () {}, {
+                get: function (o, k) {
+                    if (k === 'inspect' || k === 'valueOf')
+                        return undefined
+                    // if (custom_inspect && k === custom_inspect)
+                    //     return custom_inspect
+                    if (k === symbols.is_proxy)
+                        return true
+                    if (k === symbols.raw)
+                        return {link: url}
+                    if (typeof k === 'symbol')
+                        return undefined
 
-        // For function proxies:
-        // var dummy = function () {}
+                    if (k === 'link')
+                        return url
+
+                    return undefined
+                },
+                set: function (o, k, v) {
+                    if (k === 'link') {
+                        url = v
+                    }
+
+                    console.assert(false, "Have not fully implemented setting links yet")
+
+                    // Todo: update the containing proxy object with bus.set.sync
+                    // else return 
+                    // var value = escape_json_to_bus(v)
+                    // o[escape_field_json_to_bus(k)] = value
+                    // var new_path = path + '[' + JSON.stringify(k) + ']'
+                    // bus.set.sync(
+                    //     base,
+                    //     // Forward the patches too
+                    //     {patches: [{unit: 'json',
+                    //                 range: new_path,
+                    //                 content: JSON.stringify(v)}]}
+                    // )
+                    return true
+                },
+                has: function (o, k) {
+                    return k === 'link'
+                },
+                ownKeys: function () {
+                    return ['link']
+                },
+                // getOwnPropertyDescriptor: function (target, key) {
+                //     return { enumerable: true, configurable: true, value: this.get(o, key) }
+                // },
+                // deleteProperty: function del (o, k) {
+                //     var new_path = path + '[' + JSON.stringify(k) + ']'
+                //     delete o[escape_field_json_to_bus(k)]
+                //     bus.set(
+                //         base,
+                //         // Forward the patches too
+                //         {patches: [{unit: 'json',
+                //                     range: new_path,
+                //                     content: undefined}]}
+                //     )
+                //     return true // Report success to Proxy
+                // }
+
+                // For function proxy:
+                apply: function apply (o, This, args) {
+                    // console.log('Descending into the link', url, '!')
+                    return top_level_proxy[url]
+                }
+            })            
+        }
+
 
         // The top-level Proxy object holds HTTP resources
-        return new Proxy(cache, {
+        var top_level_proxy = new Proxy(cache, {
             get: function get(o, k) {
                 if (k === symbols.is_proxy)
                     return true
+                if (k === symbols.raw)
+                    return raw_proxy()
                 if (k === 'inspect' || k === 'valueOf' || typeof k === 'symbol')
                     return undefined
                 bogus_check(k)
@@ -1490,7 +1635,7 @@
             set: function set(o, key, val) {
                 bus.set({
                     key: key,
-                    val: translate_fields(val, field => escape_field_to_bus(escape_field_to_nelson(field)))
+                    val: escape_json_to_bus(val)
                 })
                 return true
             },
@@ -1503,15 +1648,35 @@
             //     return 'fluffy'
             // }
         })
+
+        return top_level_proxy
     }
     bus.state = make_proxy()
 
-    // function link (url) {
-    //     var result = bus.get(url)
-    //     result[symbols.is_link] = true
-    //     return result
-    // }
+    // This is temporary code to wrap the cache as a flat key/valuel store
+    // that returns raw objects, dereferencing .val.  We can remove it once we
+    // remove the internal .val stuff from statebus.
+    function raw_proxy () {
+        return new Proxy(cache, {
+            get: function get(o, k) { return bus.cache[k].val },
+            set: function set(o, key, val) {
+                return false
+            },
+            deleteProperty: function del (o, k) {
+                return false
+            }
+        })
+    }
 
+    function link (url) {
+        return {[symbols.link]: url}
+    }
+    function raw (proxy) {
+        if (!(typeof proxy === 'object' && proxy[symbols.is_proxy]))
+            return proxy
+
+        return proxy[symbols.raw]
+    }
 
     // So chrome can print out proxy objects decently
     if (!nodejs)
@@ -1527,7 +1692,55 @@
             hasBody: function (x) {return false}
         }]
 
-    // ******************
+
+    // ************************************************
+    //
+    // Every dialogue we have with a peer gets an ID.
+    // This `bus.dialogues` variable maps:
+    //
+    //      dialogue ID -> send_function
+    //
+    // for each peer we are in dialogue with.
+    //
+    // One can use this to make sure we don't send an update
+    // back to the same peer that sent it to us.
+
+    bus.dialogues = {}
+
+
+    // ************************************************
+    // Custom clients
+    var client_counter = 0
+    var client_busses  = {}
+    function client_bus_for (client_id) {
+        if (!bus.custom_clients) return bus
+
+        // Do we have a bus for this client yet?
+        if (client_busses[client_id])
+
+            // Return existing bus
+            return client_busses[client_id]
+
+        else {
+
+            // Make a new bus
+            var client_bus = make_bus()
+            client_bus.label = 'client-' + client_counter++
+            client_bus.master = bus
+
+            // Initialize the client-specific handlers
+            bus.custom_clients(client_bus, client_id)
+
+            // Remember it, and auto-delete it when it's no longer being used
+            client_busses[client_id] = client_bus
+            client_bus.auto_delete = () => delete client_busses[client_id]
+
+            return client_bus
+        }
+    }
+
+
+    // ************************************************
     // Network client
     function get_domain (key) { // Returns e.g. "state://foo.com"
         var m = key.match(/^i?statei?\:\/\/(([^:\/?#]*)(?:\:([0-9]+))?)/)
@@ -1543,9 +1756,10 @@
     function ws_mount (prefix, url, client_creds) {
         // Local: state://foo.com/* or /*
         var preprefix = prefix.slice(0,-1)
-        var is_absolute = /^i?statei?:\/\//
-        var has_prefix = new RegExp('^' + preprefix)
         var bus = this
+        var is_absolute = /^i?statei?:\/\//
+        var creds = client_creds || (bus.client_creds && bus.client_creds(url))
+        var has_prefix = new RegExp('^' + preprefix)
         var sock
         var attempts = 0
         var outbox = []
@@ -1625,7 +1839,6 @@
                 set(peers)
 
                 // Login
-                var creds = client_creds || (bus.client_creds && bus.client_creds(url))
                 if (creds) {
                     var i = []
                     function intro (o) {i.push(JSON.stringify({set: o}))}
@@ -1831,8 +2044,10 @@
         }
 
         // Recurse through each property on objects
-        else if (typeof json === 'object' && json !== null) {
+        else if (typeof json === 'object' && json !== null && !(symbols.link in json)) {
             var new_obj = {}
+
+            // Regular objects get their fields translated
             for (var k in json)
                 if (typeof k === 'string')
                     new_obj[translate(k, json)] = translate_fields(json[k], translate)
@@ -1862,6 +2077,21 @@
         unescape_from_bus          = (obj)   => translate_fields(obj, unescape_field_from_bus)
         escape_to_nelson           = (obj)   => translate_fields(obj, escape_field_to_nelson)
         unescape_from_nelson       = (obj)   => translate_fields(obj, unescape_field_from_nelson)
+
+    var escape_field_json_to_bus   = (field) =>
+        escape_field_to_bus(escape_field_to_nelson(field))
+    var unescape_field_bus_to_json = (field) =>
+        unescape_field_from_nelson(unescape_field_from_bus(field))
+
+    var escape_json_to_bus = (obj) => {
+        obj = translate_fields(obj, escape_field_json_to_bus)
+        return deep_map(obj, o => (typeof o === 'object' && symbols.link in o
+                                   ? {link: o[symbols.link]}
+                                   : o))
+    }
+    var unescape_bus_to_json = (obj) =>
+        translate_fields(obj, field => unescape_field_bus_to_jsob(field))
+        
 
     var field_replace = (field, pattern, replacement) => (typeof field === 'string'
                                                           ? field.replace(pattern, replacement)
@@ -1971,6 +2201,7 @@
         this.has = function (k, v) { return hash[k] && hash[k][v] }
         this.has_any = function (k) { return counts[k] }
         this.del = this.delete // for compatibility; remove this soon
+        this.empty = function () { return !Object.values(counts).some(count => count !== 0) }
     }
     function Set () {
         var hash = {}
@@ -2312,14 +2543,15 @@
 
     // Make these private methods accessible
     var api = ['cache backup_cache get set forget del fire dirty get_once',
-               'subspace bindings run_handler bind unbind reactive uncallback',
+               'old_subspace new_subspace bindings run_handler bind unbind reactive uncallback',
                'versions new_version',
-               'aget',
+               'aget client_bus_for',
                'funk_key funk_name funks key_id key_name id',
                'pending_gets gets_in gets_out loading_keys loading once',
                'global_funk busses rerunnable_funks',
-               'translate_keys translate_links apply_patch',
+               'link raw translate_keys translate_links apply_patch',
                'translate_fields escape_to_bus unescape_from_bus escape_to_nelson unescape_from_nelson',
+               'escape_field_json_to_bus unescape_field_bus_to_json escape_json_to_bus unescape_bus_to_json',
                'ws_mount net_automount message_method',
                'parse Set One_To_Many clone extend deep_map deep_equals prune validate sorta_diff log deps symbols'
               ].join(' ').split(' ')
