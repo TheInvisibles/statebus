@@ -319,7 +319,7 @@ test(function proxy_link (done) {
     done()
 })
 
-test(function proxy_links_through (done) {
+test(function proxy_links_through1 (done) {
     var bus = require('../statebus')()
 
     // First try to dereference through three links
@@ -332,16 +332,15 @@ test(function proxy_links_through (done) {
     log('state.b is', bus.state.b, 'from cache', bus.cache.b)
     log('state.a is', bus.state.a)
     log('state.a[0] is', bus.state.a[0])
-    log('state.a[0]() is', bus.state.a[0]())
-    log('state.a[0]()() is', bus.state.a[0]()())
-    assert(bus.state.a[0]()() === 'see')
+    log('state.a[0] is', bus.state.a[0])
+    assert(bus.state.a[0] === 'see')
 
     // Add a little more wrapping and try some more
 
     bus.state.nested = [99, {a: bus.link('a')}]
     log('nested is', bus.state.nested)
-    log('nested[1].a()[0]()() is', bus.state.nested[1].a()[0]()())
-    assert(bus.state.nested[1].a()[0]()() === 'see')
+    log('nested[1].a[0] is', bus.state.nested[1].a[0])
+    assert(bus.state.nested[1].a[0] === 'see')
 
     // Now try to go raw at the top-level
 
@@ -351,6 +350,11 @@ test(function proxy_links_through (done) {
         bus.state[bus.symbols.raw].nested,
         bus.raw(bus.state).nested
     ))
+
+    log('Gonna deep_quals between:',
+        bus.raw(bus.state).nested,
+        [ 99, { a: { link: 'a' } } ])
+
     assert(bus.deep_equals(
         bus.raw(bus.state).nested,
         [ 99, { a: { link: 'a' } } ]
@@ -364,6 +368,62 @@ test(function proxy_links_through (done) {
 
     done()
 })
+
+
+// Disable the version of proxy_links_through where the user has to explicitly
+// traverse links with ()
+if (false)
+    test(function proxy_links_through2 (done) {
+        var bus = require('../statebus')()
+
+        // First try to dereference through three links
+
+        bus.state.a = [bus.link('b')]
+        bus.state.b = bus.link('c')
+        bus.state.c = 'see'
+
+        log('state.c is', bus.state.c)
+        log('state.b is', bus.state.b, 'from cache', bus.cache.b)
+        log('state.a is', bus.state.a)
+        log('state.a[0] is', bus.state.a[0])
+        log('state.a[0]() is', bus.state.a[0]())
+        log('state.a[0]()() is', bus.state.a[0]()())
+        assert(bus.state.a[0]()() === 'see')
+
+        // Add a little more wrapping and try some more
+
+        bus.state.nested = [99, {a: bus.link('a')}]
+        log('nested is', bus.state.nested)
+        log('nested[1].a()[0]()() is', bus.state.nested[1].a()[0]()())
+        assert(bus.state.nested[1].a()[0]()() === 'see')
+
+        // Now try to go raw at the top-level
+
+        log('Raw is', bus.state[bus.symbols.raw].nested)
+        log('Raw is', bus.raw(bus.state).nested)
+        assert(bus.deep_equals(
+            bus.state[bus.symbols.raw].nested,
+            bus.raw(bus.state).nested
+        ))
+
+        console.log('Gonna deep_quals between:',
+                    bus.raw(bus.state).nested,
+                    [ 99, { a: { link: 'a' } } ])
+
+        assert(bus.deep_equals(
+            bus.raw(bus.state).nested,
+            [ 99, { a: { link: 'a' } } ]
+        ))
+
+        // Now try to go raw within
+
+        log('Raw inner is', bus.raw(bus.state.nested[1]))
+
+        log('Bad raw call is', bus.raw(bus.state.nested[0]))
+
+        done()
+    })
+
 
 
 test(function translate_fields (done) {

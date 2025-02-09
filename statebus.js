@@ -1455,203 +1455,124 @@
         raw: Symbol('raw'),
         link: Symbol('link')
     }
-    function make_proxy () {
-        // var custom_inspect_symbol = nodejs && require('util').inspect.custom,
-        //     custom_inspect = function (depth, options) {
-        //         return '3333333333';// util.inspect(bus.unescape_from_nelson(this), options)
-        //     }
-        function item_proxy (base, path, o) {
 
-            // Primitives pass through unscathed
-            if (typeof o === 'number'
-                || typeof o === 'string'
-                || typeof o === 'boolean'
-                || o === undefined
-                || o === null
-                || typeof o === 'function')
+    // The top-level Proxy object holds HTTP resources
+    var top_level_proxy = new Proxy(cache, {
+        get: function get(o, k) {
+            if (k === symbols.is_proxy)
+                return true
+            if (k === symbols.raw)
+                return raw_proxy()
+            if (k === 'inspect' || k === 'valueOf' || typeof k === 'symbol')
+                return undefined
+            bogus_check(k)
+            var base = bus.get(k)
+            return json_proxy(base, '', base.val)
+        },
+        set: function set(o, key, val) {
+            bus.set({
+                key: key,
+                val: escape_json_to_bus(val)
+            })
+            return true
+        },
+        deleteProperty: function del (o, k) {
+            bus.delete(escape_field_to_bus(k))
+            return true // Report success to Proxy
+        }
+    })
 
-                return o
+    // The proxy within; a recursive tree holds each piece of JSON in a resource
+    function json_proxy (base, path, o) {
 
-            // We recursively descend through {key: ...} links
-            if (typeof o === 'object' && 'link' in o) {
-                // var new_base = bus.get(o.link)
-                // return item_proxy(new_base, '', new_base.val)
-                return link_proxy(o.link)
-            }
+        // Primitives pass through unscathed
+        if (typeof o === 'number'
+            || typeof o === 'string'
+            || typeof o === 'boolean'
+            || o === undefined
+            || o === null
+            || typeof o === 'function')
 
+            return o
 
-            // For function proxies:
-            //
-            // // Javascript won't let us function call a proxy unless the
-            // // "target" is a function.  So we make a dummy target, and
-            // // don't use it.
-            // var dummy = function () {}
-
-
-            return new Proxy(o, {
-                get: function (o, k) {
-                    if (k === 'inspect' || k === 'valueOf')
-                        return undefined
-                    // if (custom_inspect && k === custom_inspect)
-                    //     return custom_inspect
-                    if (k === symbols.is_proxy)
-                        return true
-                    if (k === symbols.raw)
-                        return o
-                    if (typeof k === 'symbol')
-                        return undefined
-
-                    // Compute the new path
-                    var new_path = path + '[' + JSON.stringify(k) + ']'
-                    return item_proxy(base, new_path, o[escape_field_json_to_bus(k)])
-                },
-                set: function (o, k, v) {
-                    var value = escape_json_to_bus(v)
-                    o[escape_field_json_to_bus(k)] = value
-                    var new_path = path + '[' + JSON.stringify(k) + ']'
-                    bus.set.sync(
-                        base,
-                        // Forward the patches too
-                        {patches: [{unit: 'json',
-                                    range: new_path,
-                                    content: JSON.stringify(v)}]}
-                    )
-                    return true
-                },
-                has: function (o, k) {
-                    // if (custom_inspect && k === custom_inspect)
-                    //     return true
-                    return o.hasOwnProperty(escape_field_json_to_bus(k))
-                },
-                ownKeys: function () {
-                    return Object.keys(o).map(unescape_field_bus_to_json)
-                },
-                getOwnPropertyDescriptor: function (target, key) {
-                    return { enumerable: true, configurable: true, value: this.get(o, key) }
-                },
-                deleteProperty: function del (o, k) {
-                    var new_path = path + '[' + JSON.stringify(k) + ']'
-                    delete o[escape_field_json_to_bus(k)]
-                    bus.set(
-                        base,
-                        // Forward the patches too
-                        {patches: [{unit: 'json',
-                                    range: new_path,
-                                    content: undefined}]}
-                    )
-                    return true // Report success to Proxy
-                }
-                // For function proxies:
-                //
-                // apply: function apply (o, This, args) {
-                //     return translate_fields(o, unescape_field_from_bus)
-                // }
-            })}
-
-        function link_proxy (url) {
-            return new Proxy(function follow_link () {}, {
-                get: function (o, k) {
-                    if (k === 'inspect' || k === 'valueOf')
-                        return undefined
-                    // if (custom_inspect && k === custom_inspect)
-                    //     return custom_inspect
-                    if (k === symbols.is_proxy)
-                        return true
-                    if (k === symbols.raw)
-                        return {link: url}
-                    if (typeof k === 'symbol')
-                        return undefined
-
-                    if (k === 'link')
-                        return url
-
-                    return undefined
-                },
-                set: function (o, k, v) {
-                    if (k === 'link') {
-                        url = v
-                    }
-
-                    console.assert(false, "Have not fully implemented setting links yet")
-
-                    // Todo: update the containing proxy object with bus.set.sync
-                    // else return 
-                    // var value = escape_json_to_bus(v)
-                    // o[escape_field_json_to_bus(k)] = value
-                    // var new_path = path + '[' + JSON.stringify(k) + ']'
-                    // bus.set.sync(
-                    //     base,
-                    //     // Forward the patches too
-                    //     {patches: [{unit: 'json',
-                    //                 range: new_path,
-                    //                 content: JSON.stringify(v)}]}
-                    // )
-                    return true
-                },
-                has: function (o, k) {
-                    return k === 'link'
-                },
-                ownKeys: function () {
-                    return ['link']
-                },
-                // getOwnPropertyDescriptor: function (target, key) {
-                //     return { enumerable: true, configurable: true, value: this.get(o, key) }
-                // },
-                // deleteProperty: function del (o, k) {
-                //     var new_path = path + '[' + JSON.stringify(k) + ']'
-                //     delete o[escape_field_json_to_bus(k)]
-                //     bus.set(
-                //         base,
-                //         // Forward the patches too
-                //         {patches: [{unit: 'json',
-                //                     range: new_path,
-                //                     content: undefined}]}
-                //     )
-                //     return true // Report success to Proxy
-                // }
-
-                // For function proxy:
-                apply: function apply (o, This, args) {
-                    // console.log('Descending into the link', url, '!')
-                    return top_level_proxy[url]
-                }
-            })            
+        // We recursively descend through {key: ...} links
+        if (typeof o === 'object' && 'link' in o) {
+            var new_base = bus.get(o.link)
+            return json_proxy(new_base, '', new_base.val)
+            // return link(o.link)
         }
 
 
-        // The top-level Proxy object holds HTTP resources
-        var top_level_proxy = new Proxy(cache, {
-            get: function get(o, k) {
+        // For function proxies:
+        //
+        // // Javascript won't let us function call a proxy unless the
+        // // "target" is a function.  So we make a dummy target, and
+        // // don't use it.
+        // var dummy = function () {}
+
+
+        return new Proxy(o, {
+            get: function (o, k) {
+                if (k === 'inspect' || k === 'valueOf')
+                    return undefined
+                // if (custom_inspect && k === custom_inspect)
+                //     return custom_inspect
                 if (k === symbols.is_proxy)
                     return true
                 if (k === symbols.raw)
-                    return raw_proxy()
-                if (k === 'inspect' || k === 'valueOf' || typeof k === 'symbol')
+                    return o
+                if (typeof k === 'symbol')
                     return undefined
-                bogus_check(k)
-                var base = bus.get(k)
-                return item_proxy(base, '', base.val)
+
+                // Compute the new path
+                var new_path = path + '[' + JSON.stringify(k) + ']'
+                return json_proxy(base, new_path, o[escape_field_json_to_bus(k)])
             },
-            set: function set(o, key, val) {
-                bus.set({
-                    key: key,
-                    val: escape_json_to_bus(val)
-                })
+            set: function (o, k, v) {
+                var value = escape_json_to_bus(v)
+                o[escape_field_json_to_bus(k)] = value
+                var new_path = path + '[' + JSON.stringify(k) + ']'
+                bus.set.sync(
+                    base,
+                    // Forward the patches too
+                    {patches: [{unit: 'json',
+                                range: new_path,
+                                content: JSON.stringify(v)}]}
+                )
                 return true
             },
-            deleteProperty: function del (o, k) {
-                bus.delete(escape_field_to_bus(k))
-                return true // Report success to Proxy
+            has: function (o, k) {
+                // if (custom_inspect && k === custom_inspect)
+                //     return true
+                return o.hasOwnProperty(escape_field_json_to_bus(k))
             },
+            ownKeys: function () {
+                return Object.keys(o).map(unescape_field_bus_to_json)
+            },
+            getOwnPropertyDescriptor: function (target, key) {
+                return { enumerable: true, configurable: true, value: this.get(o, key) }
+            },
+            deleteProperty: function del (o, k) {
+                var new_path = path + '[' + JSON.stringify(k) + ']'
+                delete o[escape_field_json_to_bus(k)]
+                bus.set(
+                    base,
+                    // Forward the patches too
+                    {patches: [{unit: 'json',
+                                range: new_path,
+                                content: undefined}]}
+                )
+                return true // Report success to Proxy
+            }
             // For function proxies:
+            //
             // apply: function apply (o, This, args) {
-            //     return 'fluffy'
+            //     return translate_fields(o, unescape_field_from_bus)
             // }
         })
-
-        return top_level_proxy
     }
-    bus.state = make_proxy()
+
+    bus.state = top_level_proxy
 
     // This is temporary code to wrap the cache as a flat key/valuel store
     // that returns raw objects, dereferencing .val.  We can remove it once we
@@ -1668,9 +1589,100 @@
         })
     }
 
+    // How proxy links work right now:
+    //  - The user creates a link with bus.link(key)
+    //    - which produces a {[symbols.link]: key}
+    //    - which when set() into a proxy, is replaced with a {link: key}, to store internally
+    //  - Then, when get()ing that internal {link: key} through Proxy:
+    //    - We auto-dereference the key, with another get()
+    //    - So the user actually sees the value of the resource on the other side of the link
     function link (url) {
         return {[symbols.link]: url}
     }
+
+    // // The proxy object for links.  Disabled for now.
+    // // This type of link has to be function called, as link(), to dereference.
+    // function proxy_link (url) {
+    //     function follow_link () {}
+    //     return new Proxy(follow_link, {
+    //         get: function (o, k) {
+    //             console.log('get', k)
+    //             if (k === 'inspect' || k === 'valueOf')
+    //                 return undefined
+    //             // if (custom_inspect && k === custom_inspect)
+    //             //     return custom_inspect
+    //             if (k === symbols.is_proxy)
+    //                 return true
+    //             if (k === symbols.link)
+    //                 return true
+    //             if (k === symbols.raw)
+    //                 return {link: url}
+    //             if (typeof k === 'symbol')
+    //                 return undefined
+
+    //             if (k === 'link')
+    //                 return url
+
+    //             return follow_link[k]
+
+    //             // return undefined
+    //         },
+    //         set: function (o, k, v) {
+    //             if (k === 'link') {
+    //                 url = v
+    //             }
+
+    //             console.assert(false, "Have not fully implemented setting links yet")
+
+    //             // Todo: update the containing proxy object with bus.set.sync
+    //             // else return
+    //             // var value = escape_json_to_bus(v)
+    //             // o[escape_field_json_to_bus(k)] = value
+    //             // var new_path = path + '[' + JSON.stringify(k) + ']'
+    //             // bus.set.sync(
+    //             //     base,
+    //             //     // Forward the patches too
+    //             //     {patches: [{unit: 'json',
+    //             //                 range: new_path,
+    //             //                 content: JSON.stringify(v)}]}
+    //             // )
+    //             return true
+    //         },
+    //         has: function (o, k) {
+    //             return k === 'link'
+    //         },
+    //         ownKeys: function () {
+    //             console.log('ownkeys')
+    //             return ['link', 'arguments', 'caller', 'prototype']
+    //         },
+    //         getOwnPropertyDescriptor: function (target, key) {
+    //             console.log('getownpropertydescriptor', key)
+    //             return {
+    //                 enumerable: true,
+    //                 configurable: true,
+    //                 value: key === 'link' ? url : undefined
+    //             }
+    //         },
+    //         // deleteProperty: function del (o, k) {
+    //         //     var new_path = path + '[' + JSON.stringify(k) + ']'
+    //         //     delete o[escape_field_json_to_bus(k)]
+    //         //     bus.set(
+    //         //         base,
+    //         //         // Forward the patches too
+    //         //         {patches: [{unit: 'json',
+    //         //                     range: new_path,
+    //         //                     content: undefined}]}
+    //         //     )
+    //         //     return true // Report success to Proxy
+    //         // }
+
+    //         // For function proxy:
+    //         apply: function apply (o, This, args) {
+    //             // console.log('Descending into the link', url, '!')
+    //             return top_level_proxy[url]
+    //         }
+    //     })
+    // }
     function raw (proxy) {
         if (!(typeof proxy === 'object' && proxy[symbols.is_proxy]))
             return proxy
@@ -2064,7 +2076,7 @@
 
     // Three levels of escaping through state:
     //
-    //  - statebus-internal escapes key  -> _key
+    //  - bus internal      escapes key  -> _key
     //  - nelSON            escapes link -> _link
     //  - JSON
     //
@@ -2090,7 +2102,7 @@
                                    : o))
     }
     var unescape_bus_to_json = (obj) =>
-        translate_fields(obj, field => unescape_field_bus_to_jsob(field))
+        translate_fields(obj, field => unescape_field_bus_to_json(field))
         
 
     var field_replace = (field, pattern, replacement) => (typeof field === 'string'
@@ -2276,12 +2288,17 @@
         return object
     }
     function deep_equals (a, b) {
+        // This code was only needed for link_proxy:
+        // // Treat link proxy objects as regular JSON links.  Otherwise, the
+        // // function fields on them confuse everything.
+        // if (a && typeof a === 'object' && a[symbols.link]) a = {link: a.link}
+        // if (b && typeof b === 'object' && b[symbols.link]) b = {link: b.link}
+
         // Equal Primitives?
         if (a === b
             // But because NaN === NaN returns false:
-            || (isNaN(a) && isNaN(b)
-                // And because isNaN(undefined) returns true:
-                && typeof a === 'number' && typeof b === 'number'))
+            || (typeof a === 'number' && typeof b === 'number'
+                && isNaN(a) && isNaN(b)))
             return true
 
         // Equal Arrays?
@@ -2319,9 +2336,8 @@
         // Equal Primitives?
         if (a === b
             // But because NaN === NaN returns false:
-            || (isNaN(a) && isNaN(b)
-                // And because isNaN(undefined) returns true:
-                && typeof a === 'number' && typeof b === 'number'))
+            || (typeof a === 'number' && typeof b === 'number'
+                && isNaN(a) && isNaN(b)))
             return null
 
         // Equal Arrays?
