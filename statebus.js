@@ -1497,9 +1497,9 @@
 
         // We recursively descend through {key: ...} links
         if (typeof o === 'object' && 'link' in o) {
-            var new_base = bus.get(o.link)
-            return json_proxy(new_base, '', new_base.val)
-            // return link(o.link)
+            // var new_base = bus.get(o.link)
+            // return json_proxy(new_base, '', new_base.val)
+            return link(o.link)
         }
 
 
@@ -1597,7 +1597,11 @@
     //    - We auto-dereference the key, with another get()
     //    - So the user actually sees the value of the resource on the other side of the link
     function link (url) {
-        return {[symbols.link]: url}
+        return {
+            link: url,
+            [symbols.link]: true,
+            _: (args, o) => (o = get(url), json_proxy(o, '', o.val))
+        }
     }
 
     // // The proxy object for links.  Disabled for now.
@@ -2098,7 +2102,7 @@
     var escape_json_to_bus = (obj) => {
         obj = translate_fields(obj, escape_field_json_to_bus)
         return deep_map(obj, o => (typeof o === 'object' && symbols.link in o
-                                   ? {link: o[symbols.link]}
+                                   ? {link: o.link}
                                    : o))
     }
     var unescape_bus_to_json = (obj) =>
